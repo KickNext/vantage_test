@@ -4,22 +4,22 @@
 export const defaultConfig = {
     // Post Processing
     bloom: {
-        intensity: 1.4000000000000001,
+        intensity: 1.6,
         luminanceThreshold: 0,
-        radius: 0.23,
+        radius: 0.33,
         mipmapBlur: true
     },
     chromaticAberration: {
         offset: 0,
         radialModulation: true,
-        modulationOffset: 0.5299999999999999
+        modulationOffset: 0.23
     },
     noise: {
-        opacity: 0.055
+        opacity: 0.065
     },
     vignette: {
         offset: 0,
-        darkness: 1.6
+        darkness: 1.1
     },
 
     // Scene Colors
@@ -38,23 +38,23 @@ export const defaultConfig = {
 
     // Wave Mechanics
     wave: {
-        speed: 0.3,
-        maxScale: 9,
+        speed: 0.37,
+        maxScale: 25.5,
         // Timing (0-1 cycle)
         fadeInEnd: 0,
-        fadeOutStart: 0.195,
+        fadeOutStart: 0.1,
 
         // Material Appearance
         color: "#ffffff",
-        roughness: 0.1,
-        clearcoat: 1.0,
+        roughness: 0.08,
+        clearcoat: 1,
         metalness: 0,
-        transmission: 1, // implicit
-        thickness: 2.5, // multiplier
-        distortion: 0.25, // multiplier
-        distortionScale: 0.1,
-        chromaticAberration: 0.5,
-        anisotropy: 0.5,
-        opacity: 0.2 // multiplier
+        transmission: 1,
+        thickness: 3,
+        distortion: 0.15,
+        distortionScale: 0.08,
+        chromaticAberration: 2,
+        anisotropy: 0.48,
+        opacity: 0.31
     }
 };
