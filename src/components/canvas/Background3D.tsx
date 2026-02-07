@@ -1,4 +1,4 @@
-import { useMemo, useState, Suspense } from 'react';
+import { useMemo, useCallback, useState, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { EffectComposer, Bloom, ChromaticAberration, Noise } from '@react-three/postprocessing';
 import { PerformanceMonitor } from '@react-three/drei';
@@ -19,11 +19,30 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
 
     /**
      * Адаптивный DPR, управляемый PerformanceMonitor.
-     * Стартуем с perf.maxDpr и автоматически понижаем/повышаем
-     * если реальный FPS выходит за пределы [50, 60].
-     * Это даёт hardware acceleration без ручной настройки.
+     * onChange получает factor (0..1) и плавно масштабирует DPR
+     * между minDpr и perf.maxDpr. Нет stale closure — factor
+     * приходит напрямую из колбэка.
+     *
+     * Минимальный DPR зависит от тира:
+     * - high: не ниже 1.0 (десктоп, нет смысла давить ниже)
+     * - medium: не ниже 0.75
+     * - low: не ниже 0.5
      */
+    const minDpr = perf.tier === 'high' ? 1 : perf.tier === 'medium' ? 0.75 : 0.5;
     const [dpr, setDpr] = useState(perf.maxDpr);
+
+    /**
+     * Плавное масштабирование DPR через factor.
+     * factor=0 → minDpr, factor=1 → perf.maxDpr.
+     * Округляем до 0.25 для стабильности (избегаем микро-дроблений).
+     */
+    const handlePerformanceChange = useCallback(
+        ({ factor }: { factor: number }) => {
+            const newDpr = Math.round((minDpr + (perf.maxDpr - minDpr) * factor) * 4) / 4;
+            setDpr(Math.max(minDpr, Math.min(perf.maxDpr, newDpr)));
+        },
+        [minDpr, perf.maxDpr],
+    );
 
     const {
         // Post Processing
@@ -217,22 +236,24 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
 
                 {/*
                   * PerformanceMonitor замеряет реальный FPS и автоматически
-                  * масштабирует DPR между 0.5 и perf.maxDpr.
-                  * - onIncline: FPS выше верхней границы → повышаем DPR
-                  * - onDecline: FPS ниже нижней границы → понижаем DPR
-                  * - onChange: плавное масштабирование через factor (0..1)
-                  * - flipflops=3: после 3 скачков стабилизируемся на минимуме
+                  * масштабирует DPR через onChange(factor).
+                  * factor (0..1) → линейная интерполяция minDpr..maxDpr.
+                  * 
+                  * Не используем onIncline/onDecline (stale closure проблема),
+                  * а получаем factor напрямую — всегда актуальное значение.
+                  * 
+                  * flipflops=5: даём больше времени на стабилизацию,
+                  * чтобы intro-анимация не убила DPR навсегда.
                   */}
                 <PerformanceMonitor
-                    ms={200}
-                    iterations={6}
-                    factor={0.5}
-                    step={0.1}
-                    flipflops={3}
-                    bounds={(refreshrate) => (refreshrate > 90 ? [45, 80] : [40, 55])}
-                    onIncline={() => setDpr(Math.min(perf.maxDpr, dpr + 0.25))}
-                    onDecline={() => setDpr(Math.max(0.5, dpr - 0.25))}
-                    onFallback={() => setDpr(Math.max(0.5, perf.maxDpr * 0.5))}
+                    ms={300}
+                    iterations={8}
+                    factor={1}
+                    step={0.05}
+                    flipflops={5}
+                    bounds={(refreshrate) => (refreshrate > 90 ? [50, 85] : [45, 58])}
+                    onChange={handlePerformanceChange}
+                    onFallback={() => setDpr(Math.max(minDpr, perf.maxDpr * 0.75))}
                 />
 
                 <Suspense fallback={null}>
@@ -247,7 +268,7 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
                       * ноль пост-процессинг-проходов.
                       */}
                     {perf.tier === 'high' && (
-                        <EffectComposer enableNormalPass={false} multisampling={0}>
+                        <EffectComposer enableNormalPass={false}>
                             <Bloom
                                 luminanceThreshold={bloomThreshold}
                                 mipmapBlur
