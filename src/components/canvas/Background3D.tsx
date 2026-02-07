@@ -181,33 +181,49 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
                 <Suspense fallback={null}>
                     <OrbitalWaves colors={sceneColors} waveConfig={waveConfig} perf={perf} />
 
-                    <EffectComposer enableNormalPass={false}>
-                        {/* Bloom оставляем всегда — это ядро визуала */}
-                        {perf.enableBloom && (
+                    {/*
+                      * EffectComposer строго типизирует children —
+                      * conditional rendering через тернарный оператор невозможен.
+                      * Рендерим разные наборы эффектов в зависимости от тира.
+                      */}
+                    {perf.tier === 'high' && (
+                        <EffectComposer enableNormalPass={false}>
                             <Bloom
                                 luminanceThreshold={bloomThreshold}
                                 mipmapBlur
                                 intensity={bloomIntensity}
                                 radius={bloomRadius}
                             />
-                        )}
-                        {/* ChromaticAberration отключаем на medium/low */}
-                        {perf.enableChromaticAberration && (
                             <ChromaticAberration
                                 offset={caOffsetVec}
                                 radialModulation={true}
                                 modulationOffset={caModulation}
                             />
-                        )}
-                        {/* Noise — лёгкий эффект, но на low лишний */}
-                        {perf.enableNoise && (
                             <Noise opacity={noiseOpacity} />
-                        )}
-                        {/* Vignette — отключаем на low */}
-                        {perf.enableVignette && (
                             <Vignette eskil={false} offset={vignetteOffset} darkness={vignetteDarkness} />
-                        )}
-                    </EffectComposer>
+                        </EffectComposer>
+                    )}
+                    {perf.tier === 'medium' && (
+                        <EffectComposer enableNormalPass={false}>
+                            <Bloom
+                                luminanceThreshold={bloomThreshold}
+                                mipmapBlur
+                                intensity={bloomIntensity}
+                                radius={bloomRadius}
+                            />
+                            <Vignette eskil={false} offset={vignetteOffset} darkness={vignetteDarkness} />
+                        </EffectComposer>
+                    )}
+                    {perf.tier === 'low' && (
+                        <EffectComposer enableNormalPass={false}>
+                            <Bloom
+                                luminanceThreshold={bloomThreshold}
+                                mipmapBlur
+                                intensity={bloomIntensity}
+                                radius={bloomRadius}
+                            />
+                        </EffectComposer>
+                    )}
                 </Suspense>
             </Canvas>
         </div>
