@@ -1,9 +1,14 @@
 import { useRef, useMemo, useState, useEffect } from 'react';
 import { useFrame, useLoader } from '@react-three/fiber';
-import { BufferGeometry, Float32BufferAttribute, AdditiveBlending, Group, Mesh, TextureLoader, Color } from 'three';
+import {
+    BufferGeometry, Float32BufferAttribute, AdditiveBlending,
+    Group, Mesh, TextureLoader, Color, AmbientLight, PointLight,
+    MeshBasicMaterial, Line, LineBasicMaterial, Material
+} from 'three';
 import { easing } from 'maath';
 import { MeshTransmissionMaterial } from '@react-three/drei';
 import { defaultConfig } from '../../config/defaults';
+import type { PerformanceConfig } from '../../hooks/usePerformanceTier';
 
 interface OrbitData {
     geometry: BufferGeometry;
@@ -26,9 +31,23 @@ interface WaveProps {
     data: WaveData;
     config: typeof defaultConfig.wave;
     onComplete: (id: number) => void;
+    perf: PerformanceConfig;
 }
 
-const ImpulseWave = ({ orbit, data, config, onComplete }: WaveProps) => {
+/**
+ * Расширенный интерфейс для доступа к свойствам MeshTransmissionMaterial
+ * и MeshPhysicalMaterial через единый тип.
+ */
+interface WaveMaterialProperties extends Material {
+    distortion: number;
+    thickness: number;
+    opacity: number;
+    roughness: number;
+    chromaticAberration: number;
+    color: Color;
+}
+
+const ImpulseWave = ({ orbit, data, config, onComplete, perf }: WaveProps) => {
     const scaleGroupRef = useRef<Group>(null);
     const transmissionMeshRef = useRef<Mesh>(null);
 
@@ -66,7 +85,7 @@ const ImpulseWave = ({ orbit, data, config, onComplete }: WaveProps) => {
             if (scaleGroupRef.current) scaleGroupRef.current.scale.set(0, 0, 0);
             // Reset material properties to ensure no ghostly artifacts
             if (transmissionMeshRef.current) {
-                const mat = transmissionMeshRef.current.material as any;
+                const mat = transmissionMeshRef.current.material as WaveMaterialProperties;
                 mat.distortion = 0;
                 mat.thickness = 0;
                 mat.opacity = 0;
@@ -95,7 +114,7 @@ const ImpulseWave = ({ orbit, data, config, onComplete }: WaveProps) => {
         // Material Logic
         if (transmissionMeshRef.current) {
             // We can optimize this by only updating if values change significantly, but standard uniforms are cheap
-            const mat = transmissionMeshRef.current.material as any;
+            const mat = transmissionMeshRef.current.material as WaveMaterialProperties;
             mat.distortion = intensity * waveDistortion;
             mat.thickness = intensity * waveThickness;
             mat.opacity = intensity * waveOpacity;
@@ -109,23 +128,40 @@ const ImpulseWave = ({ orbit, data, config, onComplete }: WaveProps) => {
         <group rotation={rotation}>
             <group ref={scaleGroupRef} scale={[0, 0, 0]}>
                 <mesh ref={transmissionMeshRef} rotation={[-Math.PI / 2, 0, 0]} frustumCulled={true}>
-                    <torusGeometry args={[1, 0.5, 64, 128]} />
-                    <MeshTransmissionMaterial
-                        resolution={256}  // Reduced resolution for performance, 512 might be too heavy x 5
-                        samples={6}      // Reduced samples slightly
-                        thickness={0}
-                        roughness={waveRoughness}
-                        anisotropy={waveAnisotropy}
-                        chromaticAberration={waveChromAb}
-                        distortion={0}
-                        distortionScale={waveDistortionScale}
-                        temporalDistortion={0.1}
-                        color={waveColor}
-                        attenuationDistance={Infinity}
-                        toneMapped={false}
-                        transparent
-                        depthWrite={false}
-                    />
+                    <torusGeometry args={[1, 0.5, perf.torusSegments[0], perf.torusSegments[1]]} />
+                    {perf.useTransmissionMaterial ? (
+                        <MeshTransmissionMaterial
+                            resolution={perf.transmissionResolution}
+                            samples={perf.transmissionSamples}
+                            thickness={0}
+                            roughness={waveRoughness}
+                            anisotropy={waveAnisotropy}
+                            chromaticAberration={waveChromAb}
+                            distortion={0}
+                            distortionScale={waveDistortionScale}
+                            temporalDistortion={0.1}
+                            color={waveColor}
+                            attenuationDistance={Infinity}
+                            toneMapped={false}
+                            transparent
+                            depthWrite={false}
+                        />
+                    ) : (
+                        /**
+                         * Легковесная замена MeshTransmissionMaterial для
+                         * слабых устройств. MeshPhysicalMaterial с transmission
+                         * рендерится без отдельного FBO-прохода.
+                         */
+                        <meshPhysicalMaterial
+                            transmission={0.9}
+                            thickness={0}
+                            roughness={waveRoughness}
+                            color={waveColor}
+                            toneMapped={false}
+                            transparent
+                            depthWrite={false}
+                        />
+                    )}
                 </mesh>
             </group>
         </group>
@@ -150,7 +186,7 @@ const easeInOutSine = (x: number): number => {
 
 const Orbit = ({ geometry, speed, rotationX, rotationZ, color, radius, index }: OrbitComponentProps) => {
     const groupRef = useRef<Group>(null);
-    const lineRef = useRef<any>(null);
+    const lineRef = useRef<Line<BufferGeometry, LineBasicMaterial>>(null);
     const sphereRef = useRef<Mesh>(null);
 
     useFrame((state, delta) => {
@@ -202,7 +238,8 @@ const Orbit = ({ geometry, speed, rotationX, rotationZ, color, radius, index }: 
 
         // 2. Draw Animation (Update line geometry)
         if (lineRef.current) {
-            const pointsCount = 129; // segments(128) + 1
+            // Количество точек = сегменты + 1
+            const pointsCount = lineRef.current.geometry.getAttribute('position').count;
             const currentCount = Math.floor(drawProgress * pointsCount);
             // setDrawRange(start, count)
             lineRef.current.geometry.setDrawRange(0, currentCount);
@@ -253,13 +290,14 @@ const Orbit = ({ geometry, speed, rotationX, rotationZ, color, radius, index }: 
 interface OrbitalWavesProps {
     colors: typeof defaultConfig.colors;
     waveConfig: typeof defaultConfig.wave;
+    perf: PerformanceConfig;
 }
 
-export const OrbitalWaves = ({ colors, waveConfig }: OrbitalWavesProps) => {
+export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) => {
     const groupRef = useRef<Group>(null);
-    const ambientLightRef = useRef<any>(null);
-    const mainLightRef = useRef<any>(null);
-    const logoMaterialRef = useRef<any>(null);
+    const ambientLightRef = useRef<AmbientLight>(null);
+    const mainLightRef = useRef<PointLight>(null);
+    const logoMaterialRef = useRef<MeshBasicMaterial>(null);
 
     // Load Logo Texture
     const logoTexture = useLoader(TextureLoader, import.meta.env.BASE_URL + 'logo_vantage.svg');
@@ -271,8 +309,9 @@ export const OrbitalWaves = ({ colors, waveConfig }: OrbitalWavesProps) => {
     const [active, setActive] = useState(false);
 
     // Wave Management
+    // Кол-во волн ограничено perf.maxWaves
     const [waves, setWaves] = useState<WaveData[]>(() =>
-        Array.from({ length: 5 }).map((_, i) => ({
+        Array.from({ length: perf.maxWaves }).map((_, i) => ({
             id: i,
             active: false,
             startTime: 0,
@@ -285,7 +324,38 @@ export const OrbitalWaves = ({ colors, waveConfig }: OrbitalWavesProps) => {
     const hasFiredIntroWave = useRef<boolean>(false);
     const triggerQueue = useRef<boolean>(false);
 
-    const triggerWaveAction = (state: any) => {
+    /**
+     * Кэшированный экземпляр Color для переиспользования в useFrame.
+     * Избегаем создания new Color() на каждом кадре,
+     * что снижает нагрузку на GC.
+     */
+    const cachedColor = useRef(new Color());
+
+    /** Орбиты с адаптивным кол-вом сегментов */
+    const [orbits] = useState(() => {
+        const segments = perf.orbitSegments;
+        return Array.from({ length: 10 }).map((_, i) => {
+            const radius = 3 + i * 1.5;
+            const points = [];
+            for (let j = 0; j <= segments; j++) {
+                const theta = (j / segments) * Math.PI * 2;
+                points.push(Math.cos(theta) * radius, 0, Math.sin(theta) * radius);
+            }
+            const geometry = new BufferGeometry();
+            geometry.setAttribute('position', new Float32BufferAttribute(points, 3));
+
+            return {
+                geometry,
+                radius,
+                colorIndex: i % 5,
+                speed: (Math.random() * 0.1 + 0.05) * (i % 2 === 0 ? 1 : -1),
+                rotationX: (Math.random() - 0.5) * Math.PI * 0.5,
+                rotationZ: (Math.random() - 0.5) * Math.PI * 0.2,
+            };
+        });
+    });
+
+    const triggerWaveAction = (state: { clock: { getElapsedTime: () => number } }) => {
         const availableWaveIndex = waves.findIndex(w => !w.active);
 
         if (availableWaveIndex !== -1) {
@@ -378,8 +448,9 @@ export const OrbitalWaves = ({ colors, waveConfig }: OrbitalWavesProps) => {
                 logoMaterialRef.current.opacity = intensity;
 
                 // Set color with Glow (Bloom)
+                // Переиспользуем кэшированный Color, чтобы не аллоцировать на каждом кадре
                 const targetColorHex = orbitColors[orbits[activeWave.orbitIndex].colorIndex];
-                const activeColor = new Color(targetColorHex);
+                const activeColor = cachedColor.current.set(targetColorHex);
 
                 if (cycle > startDelay && cycle < startDelay + glowDuration) {
                     const glowProgress = (cycle - startDelay) / glowDuration;
@@ -441,29 +512,6 @@ export const OrbitalWaves = ({ colors, waveConfig }: OrbitalWavesProps) => {
         });
     };
 
-    const [orbits] = useState(() => {
-        return Array.from({ length: 10 }).map((_, i) => {
-            const radius = 3 + i * 1.5;
-            const points = [];
-            const segments = 128; // Used for draw logic count
-            for (let j = 0; j <= segments; j++) {
-                const theta = (j / segments) * Math.PI * 2;
-                points.push(Math.cos(theta) * radius, 0, Math.sin(theta) * radius);
-            }
-            const geometry = new BufferGeometry();
-            geometry.setAttribute('position', new Float32BufferAttribute(points, 3));
-
-            return {
-                geometry,
-                radius,
-                colorIndex: i % 5, // Cycle through the 5 specific colors
-                speed: (Math.random() * 0.1 + 0.05) * (i % 2 === 0 ? 1 : -1),
-                rotationX: (Math.random() - 0.5) * Math.PI * 0.5,
-                rotationZ: (Math.random() - 0.5) * Math.PI * 0.2,
-            };
-        });
-    });
-
     return (
         <>
             <group ref={groupRef} onPointerDown={handlePointerDown} rotation={[0, 0, 0]}>
@@ -475,7 +523,7 @@ export const OrbitalWaves = ({ colors, waveConfig }: OrbitalWavesProps) => {
 
                 {/* Central Black Hole: Replaces the planet */}
                 <mesh onClick={(e) => { e.stopPropagation(); handlePointerDown(); }}>
-                    <sphereGeometry args={[2, 64, 64]} />
+                <sphereGeometry args={[2, perf.sphereSegments[0], perf.sphereSegments[1]]} />
                     <meshBasicMaterial color="#0a0a0a" />
                 </mesh>
 
@@ -487,6 +535,7 @@ export const OrbitalWaves = ({ colors, waveConfig }: OrbitalWavesProps) => {
                         orbit={orbits[wave.orbitIndex]}
                         config={waveConfig}
                         onComplete={handleWaveComplete}
+                        perf={perf}
                     />
                 ))}
 

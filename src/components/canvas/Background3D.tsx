@@ -6,12 +6,16 @@ import { Vector2 } from 'three';
 import type { SceneType } from '../../types';
 import { useControls, folder, button } from 'leva';
 import { defaultConfig } from '../../config/defaults';
+import { usePerformanceTier } from '../../hooks/usePerformanceTier';
 
 interface Background3DProps {
     scene: SceneType;
 }
 
 export const Background3D = ({ scene: _scene }: Background3DProps) => {
+    /** Адаптивный конфиг производительности (high / medium / low) */
+    const perf = usePerformanceTier();
+
     const {
         // Post Processing
         bloomIntensity, bloomRadius, bloomThreshold,
@@ -150,32 +154,59 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
         planetoidEmissive: defaultConfig.colors.planetoidEmissive
     }), [planetColor, orbitColor1, orbitColor2, orbitColor3, orbitColor4, orbitColor5, bgColor]);
 
+    /**
+     * offset для ChromaticAberration мемоизирован, чтобы не создавать
+     * новый Vector2 на каждый рендер.
+     */
+    const caOffsetVec = useMemo(() => new Vector2(caOffset, caOffset), [caOffset]);
+
     return (
         <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0, background: bgColor }}>
             <Canvas
                 camera={{ position: [0, 0, 26], fov: 45 }}
-                gl={{ antialias: true, alpha: false, preserveDrawingBuffer: false }}
-                dpr={[1, 2]}
+                gl={{
+                    antialias: perf.antialias,
+                    alpha: false,
+                    preserveDrawingBuffer: false,
+                    // На слабых устройствах предпочитаем производительность
+                    powerPreference: perf.tier === 'low' ? 'low-power' : 'high-performance',
+                }}
+                dpr={[1, perf.maxDpr]}
+                // На low-тире рендер через requestAnimationFrame вместо setAnimationLoop
+                // для Natural frame pacing
+                frameloop="always"
             >
                 <color attach="background" args={[bgColor]} />
 
                 <Suspense fallback={null}>
-                    <OrbitalWaves colors={sceneColors} waveConfig={waveConfig} />
+                    <OrbitalWaves colors={sceneColors} waveConfig={waveConfig} perf={perf} />
 
                     <EffectComposer enableNormalPass={false}>
-                        <Bloom
-                            luminanceThreshold={bloomThreshold}
-                            mipmapBlur
-                            intensity={bloomIntensity}
-                            radius={bloomRadius}
-                        />
-                        <ChromaticAberration
-                            offset={new Vector2(caOffset, caOffset)}
-                            radialModulation={true}
-                            modulationOffset={caModulation}
-                        />
-                        <Noise opacity={noiseOpacity} />
-                        <Vignette eskil={false} offset={vignetteOffset} darkness={vignetteDarkness} />
+                        {/* Bloom оставляем всегда — это ядро визуала */}
+                        {perf.enableBloom && (
+                            <Bloom
+                                luminanceThreshold={bloomThreshold}
+                                mipmapBlur
+                                intensity={bloomIntensity}
+                                radius={bloomRadius}
+                            />
+                        )}
+                        {/* ChromaticAberration отключаем на medium/low */}
+                        {perf.enableChromaticAberration && (
+                            <ChromaticAberration
+                                offset={caOffsetVec}
+                                radialModulation={true}
+                                modulationOffset={caModulation}
+                            />
+                        )}
+                        {/* Noise — лёгкий эффект, но на low лишний */}
+                        {perf.enableNoise && (
+                            <Noise opacity={noiseOpacity} />
+                        )}
+                        {/* Vignette — отключаем на low */}
+                        {perf.enableVignette && (
+                            <Vignette eskil={false} offset={vignetteOffset} darkness={vignetteDarkness} />
+                        )}
                     </EffectComposer>
                 </Suspense>
             </Canvas>
