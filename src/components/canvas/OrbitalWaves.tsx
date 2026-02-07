@@ -113,14 +113,19 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf }: WaveProps) => {
 
         // Material Logic
         if (transmissionMeshRef.current) {
-            // We can optimize this by only updating if values change significantly, but standard uniforms are cheap
             const mat = transmissionMeshRef.current.material as WaveMaterialProperties;
-            mat.distortion = intensity * waveDistortion;
-            mat.thickness = intensity * waveThickness;
             mat.opacity = intensity * waveOpacity;
-            mat.roughness = waveRoughness;
             mat.color.set(waveColor);
-            mat.chromaticAberration = waveChromAb;
+
+            // distortion / thickness / chromaticAberration есть только
+            // у MeshTransmissionMaterial (high-тир). На medium/low
+            // используется meshBasicMaterial, где этих свойств нет.
+            if ('distortion' in mat) {
+                mat.distortion = intensity * waveDistortion;
+                mat.thickness = intensity * waveThickness;
+                mat.roughness = waveRoughness;
+                mat.chromaticAberration = waveChromAb;
+            }
         }
     });
 
@@ -128,46 +133,50 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf }: WaveProps) => {
         <group rotation={rotation}>
             <group ref={scaleGroupRef} scale={[0, 0, 0]}>
                 <mesh ref={transmissionMeshRef} rotation={[-Math.PI / 2, 0, 0]} frustumCulled={true}>
-                    <torusGeometry args={[1, 0.5, perf.torusSegments[0], perf.torusSegments[1]]} />
                     {perf.useTransmissionMaterial ? (
-                        <MeshTransmissionMaterial
-                            resolution={perf.transmissionResolution}
-                            samples={perf.transmissionSamples}
-                            thickness={0}
-                            roughness={waveRoughness}
-                            anisotropy={waveAnisotropy}
-                            chromaticAberration={waveChromAb}
-                            distortion={0}
-                            distortionScale={waveDistortionScale}
-                            temporalDistortion={0.1}
-                            color={waveColor}
-                            attenuationDistance={Infinity}
-                            toneMapped={false}
-                            transparent
-                            depthWrite={false}
-                        />
+                        <>
+                            <torusGeometry args={[1, 0.5, perf.torusSegments[0], perf.torusSegments[1]]} />
+                            <MeshTransmissionMaterial
+                                resolution={perf.transmissionResolution}
+                                samples={perf.transmissionSamples}
+                                thickness={0}
+                                roughness={waveRoughness}
+                                anisotropy={waveAnisotropy}
+                                chromaticAberration={waveChromAb}
+                                distortion={0}
+                                distortionScale={waveDistortionScale}
+                                temporalDistortion={0.1}
+                                color={waveColor}
+                                attenuationDistance={Infinity}
+                                toneMapped={false}
+                                transparent
+                                depthWrite={false}
+                            />
+                        </>
                     ) : (
                         /**
                          * Легковесная замена MeshTransmissionMaterial для
                          * medium / low устройств.
                          *
-                         * meshStandardMaterial вместо meshPhysicalMaterial:
-                         * - Нет transmission → нет внутреннего FBO
-                         * - Освещение считается, но без доп. проходов
-                         * - transparent + emissive даёт визуально похожий
-                         *   эффект свечения волны
+                         * Вместо тора с объёмным материалом используем
+                         * плоское кольцо (ringGeometry) + meshBasicMaterial
+                         * с AdditiveBlending. Это даёт тонкую светящуюся
+                         * волну без непрозрачного «облака»:
+                         * - Нет FBO / transmission
+                         * - Аддитивное смешивание = свечение поверх сцены
+                         * - Минимальная нагрузка на GPU
                          */
-                        <meshStandardMaterial
-                            color={waveColor}
-                            emissive={waveColor}
-                            emissiveIntensity={0.5}
-                            roughness={waveRoughness}
-                            metalness={0}
-                            toneMapped={false}
-                            transparent
-                            opacity={0}
-                            depthWrite={false}
-                        />
+                        <>
+                            <ringGeometry args={[0.8, 1.2, perf.torusSegments[1], 1]} />
+                            <meshBasicMaterial
+                                color={waveColor}
+                                toneMapped={false}
+                                transparent
+                                opacity={0}
+                                depthWrite={false}
+                                blending={AdditiveBlending}
+                            />
+                        </>
                     )}
                 </mesh>
             </group>
