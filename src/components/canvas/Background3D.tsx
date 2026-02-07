@@ -1,6 +1,6 @@
 import { useMemo, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { EffectComposer, Bloom, ChromaticAberration, Noise, Vignette } from '@react-three/postprocessing';
+import { EffectComposer, Bloom, ChromaticAberration, Noise } from '@react-three/postprocessing';
 import { OrbitalWaves } from './OrbitalWaves';
 import { Vector2 } from 'three';
 import type { SceneType } from '../../types';
@@ -39,8 +39,8 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
             caOffset: { value: defaultConfig.chromaticAberration.offset, min: 0, max: 0.01, step: 0.001 },
             caModulation: { value: defaultConfig.chromaticAberration.modulationOffset, min: 0, max: 1 },
             noiseOpacity: { value: defaultConfig.noise.opacity, min: 0, max: 0.5 },
-            vignetteOffset: { value: defaultConfig.vignette.offset, min: 0, max: 1 },
-            vignetteDarkness: { value: defaultConfig.vignette.darkness, min: 0, max: 2 },
+            vignetteOffset: { value: defaultConfig.vignette.offset, min: 0, max: 1, label: 'Vignette Start' },
+            vignetteDarkness: { value: defaultConfig.vignette.darkness, min: 0, max: 2, label: 'Vignette Strength' },
         }),
         'Global Colors': folder({
             bgColor: { value: defaultConfig.colors.background }
@@ -160,8 +160,33 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
      */
     const caOffsetVec = useMemo(() => new Vector2(caOffset, caOffset), [caOffset]);
 
+    /**
+     * CSS Vignette — заменяет GPU Vignette-эффект.
+     * Использует radial-gradient с цветом фона, поэтому:
+     * - Нет лишнего shader-прохода (бесплатно для GPU)
+     * - Точно совпадает с цветом фона на AMOLED
+     * - vignetteOffset управляет размером прозрачной зоны в центре
+     * - vignetteDarkness управляет непрозрачностью краёв
+     */
+    const vignetteStyle = useMemo<React.CSSProperties>(() => ({
+        position: 'absolute' as const,
+        top: 0,
+        left: 0,
+        width: '100%',
+        height: '100%',
+        pointerEvents: 'none' as const,
+        zIndex: 1,
+        background: `radial-gradient(
+            ellipse at center,
+            transparent ${Math.round(vignetteOffset * 100)}%,
+            ${bgColor} ${Math.round(100 - vignetteDarkness * 20)}%
+        )`,
+    }), [vignetteOffset, vignetteDarkness, bgColor]);
+
     return (
         <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', zIndex: 0, background: bgColor }}>
+            {/* CSS Vignette overlay — совпадает с цветом фона */}
+            <div style={vignetteStyle} />
             <Canvas
                 camera={{ position: [0, 0, 26], fov: 45 }}
                 gl={{
@@ -182,9 +207,12 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
                     <OrbitalWaves colors={sceneColors} waveConfig={waveConfig} perf={perf} />
 
                     {/*
-                      * EffectComposer строго типизирует children —
-                      * conditional rendering через тернарный оператор невозможен.
-                      * Рендерим разные наборы эффектов в зависимости от тира.
+                      * EffectComposer строго типизирует children,
+                      * поэтому рендерим разные наборы эффектов.
+                      *
+                      * Vignette заменена CSS radial-gradient (см. выше).
+                      * На low-тире EffectComposer не рендерится —
+                      * ноль пост-процессинг-проходов.
                       */}
                     {perf.tier === 'high' && (
                         <EffectComposer enableNormalPass={false}>
@@ -200,7 +228,6 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
                                 modulationOffset={caModulation}
                             />
                             <Noise opacity={noiseOpacity} />
-                            <Vignette eskil={false} offset={vignetteOffset} darkness={vignetteDarkness} />
                         </EffectComposer>
                     )}
                     {perf.tier === 'medium' && (
@@ -211,19 +238,9 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
                                 intensity={bloomIntensity}
                                 radius={bloomRadius}
                             />
-                            <Vignette eskil={false} offset={vignetteOffset} darkness={vignetteDarkness} />
                         </EffectComposer>
                     )}
-                    {perf.tier === 'low' && (
-                        <EffectComposer enableNormalPass={false}>
-                            <Bloom
-                                luminanceThreshold={bloomThreshold}
-                                mipmapBlur
-                                intensity={bloomIntensity}
-                                radius={bloomRadius}
-                            />
-                        </EffectComposer>
-                    )}
+                    {/* На low-тире — ноль пост-процессинга */}
                 </Suspense>
             </Canvas>
         </div>

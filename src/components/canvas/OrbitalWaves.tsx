@@ -149,16 +149,23 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf }: WaveProps) => {
                     ) : (
                         /**
                          * Легковесная замена MeshTransmissionMaterial для
-                         * слабых устройств. MeshPhysicalMaterial с transmission
-                         * рендерится без отдельного FBO-прохода.
+                         * medium / low устройств.
+                         *
+                         * meshStandardMaterial вместо meshPhysicalMaterial:
+                         * - Нет transmission → нет внутреннего FBO
+                         * - Освещение считается, но без доп. проходов
+                         * - transparent + emissive даёт визуально похожий
+                         *   эффект свечения волны
                          */
-                        <meshPhysicalMaterial
-                            transmission={0.9}
-                            thickness={0}
-                            roughness={waveRoughness}
+                        <meshStandardMaterial
                             color={waveColor}
+                            emissive={waveColor}
+                            emissiveIntensity={0.5}
+                            roughness={waveRoughness}
+                            metalness={0}
                             toneMapped={false}
                             transparent
+                            opacity={0}
                             depthWrite={false}
                         />
                     )}

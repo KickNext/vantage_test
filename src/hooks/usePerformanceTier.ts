@@ -167,7 +167,10 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
                 enableNoise: false,
                 enableVignette: true,
 
-                useTransmissionMaterial: true,
+                // MeshTransmissionMaterial слишком дорог для мобилок —
+                // FBO-проход на каждую волну убивает FPS.
+                // Используем meshStandardMaterial с прозрачностью.
+                useTransmissionMaterial: false,
                 transmissionResolution: 128,
                 transmissionSamples: 4,
                 maxWaves: 3,
@@ -183,13 +186,15 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
                 sphereSegments: [16, 16],
                 orbitSegments: 48,
 
-                enableBloom: true,
+                // На low-тире Bloom тоже отключён —
+                // ноль пост-процессинг-проходов.
+                enableBloom: false,
                 enableChromaticAberration: false,
                 enableNoise: false,
                 enableVignette: false,
 
-                // На слабых устройствах MeshTransmissionMaterial слишком дорог —
-                // заменяем на MeshPhysicalMaterial
+                // На слабых устройствах используем meshBasicMaterial —
+                // никаких FBO, и даже освещение не считается.
                 useTransmissionMaterial: false,
                 transmissionResolution: 64,
                 transmissionSamples: 2,
