@@ -1,6 +1,7 @@
-import { useMemo, Suspense } from 'react';
+import { useMemo, useState, Suspense } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { EffectComposer, Bloom, ChromaticAberration, Noise } from '@react-three/postprocessing';
+import { PerformanceMonitor } from '@react-three/drei';
 import { OrbitalWaves } from './OrbitalWaves';
 import { Vector2 } from 'three';
 import type { SceneType } from '../../types';
@@ -15,6 +16,14 @@ interface Background3DProps {
 export const Background3D = ({ scene: _scene }: Background3DProps) => {
     /** Адаптивный конфиг производительности (high / medium / low) */
     const perf = usePerformanceTier();
+
+    /**
+     * Адаптивный DPR, управляемый PerformanceMonitor.
+     * Стартуем с perf.maxDpr и автоматически понижаем/повышаем
+     * если реальный FPS выходит за пределы [50, 60].
+     * Это даёт hardware acceleration без ручной настройки.
+     */
+    const [dpr, setDpr] = useState(perf.maxDpr);
 
     const {
         // Post Processing
@@ -193,15 +202,38 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
                     antialias: perf.antialias,
                     alpha: false,
                     preserveDrawingBuffer: false,
-                    // На слабых устройствах предпочитаем производительность
-                    powerPreference: perf.tier === 'low' ? 'low-power' : 'high-performance',
+                    // Всегда запрашиваем мощный GPU —
+                    // low-power может выбрать встроенный GPU,
+                    // который ещё слабее.
+                    powerPreference: 'high-performance',
                 }}
-                dpr={[1, perf.maxDpr]}
-                // На low-тире рендер через requestAnimationFrame вместо setAnimationLoop
-                // для Natural frame pacing
+                dpr={dpr}
+                // flat отключает tone mapping на уровне Canvas —
+                // один лишний shader-проход УБРАН.
+                flat
                 frameloop="always"
             >
                 <color attach="background" args={[bgColor]} />
+
+                {/*
+                  * PerformanceMonitor замеряет реальный FPS и автоматически
+                  * масштабирует DPR между 0.5 и perf.maxDpr.
+                  * - onIncline: FPS выше верхней границы → повышаем DPR
+                  * - onDecline: FPS ниже нижней границы → понижаем DPR
+                  * - onChange: плавное масштабирование через factor (0..1)
+                  * - flipflops=3: после 3 скачков стабилизируемся на минимуме
+                  */}
+                <PerformanceMonitor
+                    ms={200}
+                    iterations={6}
+                    factor={0.5}
+                    step={0.1}
+                    flipflops={3}
+                    bounds={(refreshrate) => (refreshrate > 90 ? [45, 80] : [40, 55])}
+                    onIncline={() => setDpr(Math.min(perf.maxDpr, dpr + 0.25))}
+                    onDecline={() => setDpr(Math.max(0.5, dpr - 0.25))}
+                    onFallback={() => setDpr(Math.max(0.5, perf.maxDpr * 0.5))}
+                />
 
                 <Suspense fallback={null}>
                     <OrbitalWaves colors={sceneColors} waveConfig={waveConfig} perf={perf} />
@@ -215,7 +247,7 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
                       * ноль пост-процессинг-проходов.
                       */}
                     {perf.tier === 'high' && (
-                        <EffectComposer enableNormalPass={false}>
+                        <EffectComposer enableNormalPass={false} multisampling={0}>
                             <Bloom
                                 luminanceThreshold={bloomThreshold}
                                 mipmapBlur
@@ -231,12 +263,13 @@ export const Background3D = ({ scene: _scene }: Background3DProps) => {
                         </EffectComposer>
                     )}
                     {perf.tier === 'medium' && (
-                        <EffectComposer enableNormalPass={false}>
+                        <EffectComposer enableNormalPass={false} multisampling={0}>
                             <Bloom
                                 luminanceThreshold={bloomThreshold}
                                 mipmapBlur
-                                intensity={bloomIntensity}
+                                intensity={bloomIntensity * 0.8}
                                 radius={bloomRadius}
+                                levels={3}
                             />
                         </EffectComposer>
                     )}

@@ -154,11 +154,11 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
             return {
                 tier,
                 maxDpr: 1.5,
-                antialias: true,
+                antialias: false,
 
-                torusSegments: [32, 64],
-                sphereSegments: [32, 32],
-                orbitSegments: 64,
+                torusSegments: [24, 48],
+                sphereSegments: [24, 24],
+                orbitSegments: 48,
 
                 enableBloom: true,
                 enableChromaticAberration: false,

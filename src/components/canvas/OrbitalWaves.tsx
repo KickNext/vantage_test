@@ -303,6 +303,15 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
     const wavesGroupRef = useRef<Group>(null);
 
     /**
+     * Счётчик кадров для throttle FBO-рендера на мобилках.
+     * На high-тире рендерим каждый кадр (fboSkip=0),
+     * на medium/low — каждый 2-й/3-й (fboSkip=1/2).
+     * Рефракционная текстура низкорезолюшн, пропуск кадров незаметен.
+     */
+    const fboFrameCounter = useRef(0);
+    const fboRenderInterval = perf.tier === 'high' ? 1 : perf.tier === 'medium' ? 2 : 3;
+
+    /**
      * Общий FBO для рефракции.
      * Сцена рендерится сюда один раз за кадр (без волн),
      * затем текстура передаётся каждому MeshTransmissionMaterial
@@ -419,21 +428,25 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
         if (!active) setActive(true);
 
         // ── Shared FBO ──────────────────────────────────────────
-        // Рендерим сцену без волн в общий буфер один раз за кадр.
-        // MeshTransmissionMaterial получает buffer={sharedFbo.texture}
-        // и пропускает свой внутренний FBO-проход.
-        // Результат: O(1) дополнительный рендер вместо O(N).
+        // Рендерим сцену без волн в общий буфер.
+        // На mobile — не каждый кадр (throttle), т.к. рефракционная
+        // текстура низкорезолюшн и разницу между кадрами не видно.
         if (wavesGroupRef.current) {
-            const oldToneMapping = state.gl.toneMapping;
-            state.gl.toneMapping = NoToneMapping;
+            fboFrameCounter.current++;
+            if (fboFrameCounter.current >= fboRenderInterval) {
+                fboFrameCounter.current = 0;
 
-            wavesGroupRef.current.visible = false;
-            state.gl.setRenderTarget(sharedFbo);
-            state.gl.render(state.scene, state.camera);
-            state.gl.setRenderTarget(null);
-            wavesGroupRef.current.visible = true;
+                const oldToneMapping = state.gl.toneMapping;
+                state.gl.toneMapping = NoToneMapping;
 
-            state.gl.toneMapping = oldToneMapping;
+                wavesGroupRef.current.visible = false;
+                state.gl.setRenderTarget(sharedFbo);
+                state.gl.render(state.scene, state.camera);
+                state.gl.setRenderTarget(null);
+                wavesGroupRef.current.visible = true;
+
+                state.gl.toneMapping = oldToneMapping;
+            }
         }
 
         const now = state.clock.getElapsedTime();
