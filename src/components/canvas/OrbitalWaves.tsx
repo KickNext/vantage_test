@@ -3,10 +3,11 @@ import { useFrame, useLoader } from '@react-three/fiber';
 import {
     BufferGeometry, Float32BufferAttribute, AdditiveBlending,
     Group, Mesh, TextureLoader, Color, AmbientLight, PointLight,
-    MeshBasicMaterial, Line, LineBasicMaterial, Material
+    MeshBasicMaterial, Line, LineBasicMaterial, Material, Texture,
+    NoToneMapping
 } from 'three';
 import { easing } from 'maath';
-import { MeshTransmissionMaterial } from '@react-three/drei';
+import { MeshTransmissionMaterial, useFBO } from '@react-three/drei';
 import { defaultConfig } from '../../config/defaults';
 import type { PerformanceConfig } from '../../hooks/usePerformanceTier';
 
@@ -32,6 +33,13 @@ interface WaveProps {
     config: typeof defaultConfig.wave;
     onComplete: (id: number) => void;
     perf: PerformanceConfig;
+    /**
+     * Общая текстура сцены для рефракции.
+     * Когда передана — MeshTransmissionMaterial пропускает
+     * свой собственный FBO-рендер и использует эту текстуру.
+     * Один буфер на все волны = O(1) вместо O(N) рендеров.
+     */
+    sharedBuffer: Texture;
 }
 
 /**
@@ -47,7 +55,7 @@ interface WaveMaterialProperties extends Material {
     color: Color;
 }
 
-const ImpulseWave = ({ orbit, data, config, onComplete, perf }: WaveProps) => {
+const ImpulseWave = ({ orbit, data, config, onComplete, perf, sharedBuffer }: WaveProps) => {
     const scaleGroupRef = useRef<Group>(null);
     const transmissionMeshRef = useRef<Mesh>(null);
 
@@ -116,16 +124,10 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf }: WaveProps) => {
             const mat = transmissionMeshRef.current.material as WaveMaterialProperties;
             mat.opacity = intensity * waveOpacity;
             mat.color.set(waveColor);
-
-            // distortion / thickness / chromaticAberration есть только
-            // у MeshTransmissionMaterial (high-тир). На medium/low
-            // используется meshBasicMaterial, где этих свойств нет.
-            if ('distortion' in mat) {
-                mat.distortion = intensity * waveDistortion;
-                mat.thickness = intensity * waveThickness;
-                mat.roughness = waveRoughness;
-                mat.chromaticAberration = waveChromAb;
-            }
+            mat.distortion = intensity * waveDistortion;
+            mat.thickness = intensity * waveThickness;
+            mat.roughness = waveRoughness;
+            mat.chromaticAberration = waveChromAb;
         }
     });
 
@@ -133,51 +135,33 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf }: WaveProps) => {
         <group rotation={rotation}>
             <group ref={scaleGroupRef} scale={[0, 0, 0]}>
                 <mesh ref={transmissionMeshRef} rotation={[-Math.PI / 2, 0, 0]} frustumCulled={true}>
-                    {perf.useTransmissionMaterial ? (
-                        <>
-                            <torusGeometry args={[1, 0.5, perf.torusSegments[0], perf.torusSegments[1]]} />
-                            <MeshTransmissionMaterial
-                                resolution={perf.transmissionResolution}
-                                samples={perf.transmissionSamples}
-                                thickness={0}
-                                roughness={waveRoughness}
-                                anisotropy={waveAnisotropy}
-                                chromaticAberration={waveChromAb}
-                                distortion={0}
-                                distortionScale={waveDistortionScale}
-                                temporalDistortion={0.1}
-                                color={waveColor}
-                                attenuationDistance={Infinity}
-                                toneMapped={false}
-                                transparent
-                                depthWrite={false}
-                            />
-                        </>
-                    ) : (
-                        /**
-                         * Легковесная замена MeshTransmissionMaterial для
-                         * medium / low устройств.
-                         *
-                         * Вместо тора с объёмным материалом используем
-                         * плоское кольцо (ringGeometry) + meshBasicMaterial
-                         * с AdditiveBlending. Это даёт тонкую светящуюся
-                         * волну без непрозрачного «облака»:
-                         * - Нет FBO / transmission
-                         * - Аддитивное смешивание = свечение поверх сцены
-                         * - Минимальная нагрузка на GPU
-                         */
-                        <>
-                            <ringGeometry args={[0.8, 1.2, perf.torusSegments[1], 1]} />
-                            <meshBasicMaterial
-                                color={waveColor}
-                                toneMapped={false}
-                                transparent
-                                opacity={0}
-                                depthWrite={false}
-                                blending={AdditiveBlending}
-                            />
-                        </>
-                    )}
+                    <torusGeometry args={[1, 0.5, perf.torusSegments[0], perf.torusSegments[1]]} />
+                    {/*
+                      * MeshTransmissionMaterial используется на ВСЕХ тирах.
+                      * Ключевая оптимизация: проп buffer={sharedBuffer}
+                      * указывает материалу использовать общую текстуру сцены
+                      * вместо рендера собственного FBO.
+                      *
+                      * Без buffer: каждая волна = 1 полный рендер сцены.
+                      * С sharedBuffer: все волны делят 1 рендер = O(1).
+                      */}
+                    <MeshTransmissionMaterial
+                        buffer={sharedBuffer}
+                        resolution={perf.transmissionResolution}
+                        samples={perf.transmissionSamples}
+                        thickness={0}
+                        roughness={waveRoughness}
+                        anisotropy={waveAnisotropy}
+                        chromaticAberration={waveChromAb}
+                        distortion={0}
+                        distortionScale={waveDistortionScale}
+                        temporalDistortion={0.1}
+                        color={waveColor}
+                        attenuationDistance={Infinity}
+                        toneMapped={false}
+                        transparent
+                        depthWrite={false}
+                    />
                 </mesh>
             </group>
         </group>
@@ -315,6 +299,18 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
     const mainLightRef = useRef<PointLight>(null);
     const logoMaterialRef = useRef<MeshBasicMaterial>(null);
 
+    /** Группа волн — скрывается на время рендера в shared FBO */
+    const wavesGroupRef = useRef<Group>(null);
+
+    /**
+     * Общий FBO для рефракции.
+     * Сцена рендерится сюда один раз за кадр (без волн),
+     * затем текстура передаётся каждому MeshTransmissionMaterial
+     * через проп buffer — материал пропускает собственный FBO.
+     * Разрешение адаптивно: high=256, medium=128, low=64.
+     */
+    const sharedFbo = useFBO(perf.transmissionResolution, perf.transmissionResolution);
+
     // Load Logo Texture
     const logoTexture = useLoader(TextureLoader, import.meta.env.BASE_URL + 'logo_vantage.svg');
 
@@ -421,6 +417,24 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
     useFrame((state, delta) => {
         // Auto-activate on mount/first frame
         if (!active) setActive(true);
+
+        // ── Shared FBO ──────────────────────────────────────────
+        // Рендерим сцену без волн в общий буфер один раз за кадр.
+        // MeshTransmissionMaterial получает buffer={sharedFbo.texture}
+        // и пропускает свой внутренний FBO-проход.
+        // Результат: O(1) дополнительный рендер вместо O(N).
+        if (wavesGroupRef.current) {
+            const oldToneMapping = state.gl.toneMapping;
+            state.gl.toneMapping = NoToneMapping;
+
+            wavesGroupRef.current.visible = false;
+            state.gl.setRenderTarget(sharedFbo);
+            state.gl.render(state.scene, state.camera);
+            state.gl.setRenderTarget(null);
+            wavesGroupRef.current.visible = true;
+
+            state.gl.toneMapping = oldToneMapping;
+        }
 
         const now = state.clock.getElapsedTime();
 
@@ -543,17 +557,20 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
                     <meshBasicMaterial color="#0a0a0a" />
                 </mesh>
 
-                {/* Dynamic Wave Impulses */}
-                {waves.map(wave => (
-                    <ImpulseWave
-                        key={wave.id}
-                        data={wave}
-                        orbit={orbits[wave.orbitIndex]}
-                        config={waveConfig}
-                        onComplete={handleWaveComplete}
-                        perf={perf}
-                    />
-                ))}
+                {/* Dynamic Wave Impulses — в группе для скрытия при FBO */}
+                <group ref={wavesGroupRef}>
+                    {waves.map(wave => (
+                        <ImpulseWave
+                            key={wave.id}
+                            data={wave}
+                            orbit={orbits[wave.orbitIndex]}
+                            config={waveConfig}
+                            onComplete={handleWaveComplete}
+                            perf={perf}
+                            sharedBuffer={sharedFbo.texture}
+                        />
+                    ))}
+                </group>
 
                 {/* Orbits */}
                 {orbits.map((orbit, i) => (

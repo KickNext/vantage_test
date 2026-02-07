@@ -53,15 +53,14 @@ export interface PerformanceConfig {
     /** Включить Vignette */
     readonly enableVignette: boolean;
 
-    // --- MeshTransmissionMaterial ---
+    // --- MeshTransmissionMaterial (Shared FBO) ---
 
     /**
-     * Использовать ли MeshTransmissionMaterial (тяжёлый, с FBO).
-     * Если false — используем упрощённый MeshPhysicalMaterial.
+     * Разрешение общего FBO для MeshTransmissionMaterial.
+     * На всех тирах используется MeshTransmissionMaterial с пропом buffer —
+     * один FBO-рендер на все волны вместо O(N).
+     * Адаптивное разрешение: high=256, medium=128, low=64.
      */
-    readonly useTransmissionMaterial: boolean;
-
-    /** Разрешение FBO для MeshTransmissionMaterial */
     readonly transmissionResolution: number;
 
     /** Количество сэмплов для MeshTransmissionMaterial */
@@ -146,7 +145,6 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
                 enableNoise: true,
                 enableVignette: true,
 
-                useTransmissionMaterial: true,
                 transmissionResolution: 256,
                 transmissionSamples: 6,
                 maxWaves: 5,
@@ -167,10 +165,8 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
                 enableNoise: false,
                 enableVignette: true,
 
-                // MeshTransmissionMaterial слишком дорог для мобилок —
-                // FBO-проход на каждую волну убивает FPS.
-                // Используем meshStandardMaterial с прозрачностью.
-                useTransmissionMaterial: false,
+                // Shared FBO: один рендер на все волны.
+                // Разрешение уменьшено для экономии GPU.
                 transmissionResolution: 128,
                 transmissionSamples: 4,
                 maxWaves: 3,
@@ -193,9 +189,8 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
                 enableNoise: false,
                 enableVignette: false,
 
-                // На слабых устройствах используем meshBasicMaterial —
-                // никаких FBO, и даже освещение не считается.
-                useTransmissionMaterial: false,
+                // Shared FBO: минимальное разрешение для слабых устройств.
+                // 64px достаточно для эффекта рефракции при O(1) рендере.
                 transmissionResolution: 64,
                 transmissionSamples: 2,
                 maxWaves: 2,
