@@ -523,7 +523,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
 
                 {/* Central Black Hole: Replaces the planet */}
                 <mesh onClick={(e) => { e.stopPropagation(); handlePointerDown(); }}>
-                <sphereGeometry args={[2, perf.sphereSegments[0], perf.sphereSegments[1]]} />
+                    <sphereGeometry args={[2, perf.sphereSegments[0], perf.sphereSegments[1]]} />
                     <meshBasicMaterial color="#0a0a0a" />
                 </mesh>
 

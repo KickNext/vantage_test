@@ -19,56 +19,56 @@ export type PerformanceTier = 'high' | 'medium' | 'low';
 
 /** Рекомендованные параметры рендера для данного тира */
 export interface PerformanceConfig {
-  /** Уровень тира */
-  readonly tier: PerformanceTier;
+    /** Уровень тира */
+    readonly tier: PerformanceTier;
 
-  /** Максимальный DPR (device pixel ratio) */
-  readonly maxDpr: number;
+    /** Максимальный DPR (device pixel ratio) */
+    readonly maxDpr: number;
 
-  /** Включить ли MSAA */
-  readonly antialias: boolean;
+    /** Включить ли MSAA */
+    readonly antialias: boolean;
 
-  // --- Геометрия ---
+    // --- Геометрия ---
 
-  /** Сегменты тора: [radialSegments, tubularSegments] */
-  readonly torusSegments: [number, number];
+    /** Сегменты тора: [radialSegments, tubularSegments] */
+    readonly torusSegments: [number, number];
 
-  /** Сегменты сферы: [widthSegments, heightSegments] */
-  readonly sphereSegments: [number, number];
+    /** Сегменты сферы: [widthSegments, heightSegments] */
+    readonly sphereSegments: [number, number];
 
-  /** Сегменты орбитальной линии */
-  readonly orbitSegments: number;
+    /** Сегменты орбитальной линии */
+    readonly orbitSegments: number;
 
-  // --- Пост-процессинг ---
+    // --- Пост-процессинг ---
 
-  /** Включить Bloom */
-  readonly enableBloom: boolean;
+    /** Включить Bloom */
+    readonly enableBloom: boolean;
 
-  /** Включить Chromatic Aberration */
-  readonly enableChromaticAberration: boolean;
+    /** Включить Chromatic Aberration */
+    readonly enableChromaticAberration: boolean;
 
-  /** Включить Noise */
-  readonly enableNoise: boolean;
+    /** Включить Noise */
+    readonly enableNoise: boolean;
 
-  /** Включить Vignette */
-  readonly enableVignette: boolean;
+    /** Включить Vignette */
+    readonly enableVignette: boolean;
 
-  // --- MeshTransmissionMaterial ---
+    // --- MeshTransmissionMaterial ---
 
-  /**
-   * Использовать ли MeshTransmissionMaterial (тяжёлый, с FBO).
-   * Если false — используем упрощённый MeshPhysicalMaterial.
-   */
-  readonly useTransmissionMaterial: boolean;
+    /**
+     * Использовать ли MeshTransmissionMaterial (тяжёлый, с FBO).
+     * Если false — используем упрощённый MeshPhysicalMaterial.
+     */
+    readonly useTransmissionMaterial: boolean;
 
-  /** Разрешение FBO для MeshTransmissionMaterial */
-  readonly transmissionResolution: number;
+    /** Разрешение FBO для MeshTransmissionMaterial */
+    readonly transmissionResolution: number;
 
-  /** Количество сэмплов для MeshTransmissionMaterial */
-  readonly transmissionSamples: number;
+    /** Количество сэмплов для MeshTransmissionMaterial */
+    readonly transmissionSamples: number;
 
-  /** Максимальное число одновременных волн */
-  readonly maxWaves: number;
+    /** Максимальное число одновременных волн */
+    readonly maxWaves: number;
 }
 
 /**
@@ -76,126 +76,126 @@ export interface PerformanceConfig {
  * Проверяет User-Agent, touch-поддержку и размер экрана.
  */
 function detectIsMobile(): boolean {
-  if (typeof window === 'undefined') return false;
+    if (typeof window === 'undefined') return false;
 
-  // Проверка User-Agent
-  const ua = navigator.userAgent || '';
-  const mobileUaPattern = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
-  if (mobileUaPattern.test(ua)) return true;
+    // Проверка User-Agent
+    const ua = navigator.userAgent || '';
+    const mobileUaPattern = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
+    if (mobileUaPattern.test(ua)) return true;
 
-  // Проверка размера экрана (мобильный = узкий экран)
-  if (window.screen.width <= 768) return true;
+    // Проверка размера экрана (мобильный = узкий экран)
+    if (window.screen.width <= 768) return true;
 
-  // Touch-only устройство (нет мыши)
-  if ('ontouchstart' in window && !window.matchMedia('(pointer: fine)').matches) return true;
+    // Touch-only устройство (нет мыши)
+    if ('ontouchstart' in window && !window.matchMedia('(pointer: fine)').matches) return true;
 
-  return false;
+    return false;
 }
 
 /**
  * Определяет тир на основе характеристик устройства.
  */
 function detectPerformanceTier(): PerformanceTier {
-  if (typeof window === 'undefined') return 'medium';
+    if (typeof window === 'undefined') return 'medium';
 
-  const isMobile = detectIsMobile();
-  const cores = navigator.hardwareConcurrency || 4;
+    const isMobile = detectIsMobile();
+    const cores = navigator.hardwareConcurrency || 4;
 
-  // navigator.deviceMemory — нестандартный API (Chrome, Edge)
-  const memory = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
+    // navigator.deviceMemory — нестандартный API (Chrome, Edge)
+    const memory = (navigator as unknown as { deviceMemory?: number }).deviceMemory;
 
-  // Мобильное устройство — сразу понижаем
-  if (isMobile) {
-    // Совсем слабое мобильное: мало ядер или мало памяти
-    if (cores <= 4 || (memory !== undefined && memory <= 4)) {
-      return 'low';
+    // Мобильное устройство — сразу понижаем
+    if (isMobile) {
+        // Совсем слабое мобильное: мало ядер или мало памяти
+        if (cores <= 4 || (memory !== undefined && memory <= 4)) {
+            return 'low';
+        }
+        // Мощная мобилка (iPad Pro, флагман)
+        return 'medium';
     }
-    // Мощная мобилка (iPad Pro, флагман)
+
+    // Десктоп
+    if (cores >= 8 && (memory === undefined || memory >= 8)) {
+        return 'high';
+    }
+
+    if (cores <= 4 || (memory !== undefined && memory <= 4)) {
+        return 'low';
+    }
+
     return 'medium';
-  }
-
-  // Десктоп
-  if (cores >= 8 && (memory === undefined || memory >= 8)) {
-    return 'high';
-  }
-
-  if (cores <= 4 || (memory !== undefined && memory <= 4)) {
-    return 'low';
-  }
-
-  return 'medium';
 }
 
 /**
  * Формирует конфиг производительности на основе тира.
  */
 function buildConfig(tier: PerformanceTier): PerformanceConfig {
-  switch (tier) {
-    case 'high':
-      return {
-        tier,
-        maxDpr: 2,
-        antialias: true,
+    switch (tier) {
+        case 'high':
+            return {
+                tier,
+                maxDpr: 2,
+                antialias: true,
 
-        torusSegments: [64, 128],
-        sphereSegments: [64, 64],
-        orbitSegments: 128,
+                torusSegments: [64, 128],
+                sphereSegments: [64, 64],
+                orbitSegments: 128,
 
-        enableBloom: true,
-        enableChromaticAberration: true,
-        enableNoise: true,
-        enableVignette: true,
+                enableBloom: true,
+                enableChromaticAberration: true,
+                enableNoise: true,
+                enableVignette: true,
 
-        useTransmissionMaterial: true,
-        transmissionResolution: 256,
-        transmissionSamples: 6,
-        maxWaves: 5,
-      };
+                useTransmissionMaterial: true,
+                transmissionResolution: 256,
+                transmissionSamples: 6,
+                maxWaves: 5,
+            };
 
-    case 'medium':
-      return {
-        tier,
-        maxDpr: 1.5,
-        antialias: true,
+        case 'medium':
+            return {
+                tier,
+                maxDpr: 1.5,
+                antialias: true,
 
-        torusSegments: [32, 64],
-        sphereSegments: [32, 32],
-        orbitSegments: 64,
+                torusSegments: [32, 64],
+                sphereSegments: [32, 32],
+                orbitSegments: 64,
 
-        enableBloom: true,
-        enableChromaticAberration: false,
-        enableNoise: false,
-        enableVignette: true,
+                enableBloom: true,
+                enableChromaticAberration: false,
+                enableNoise: false,
+                enableVignette: true,
 
-        useTransmissionMaterial: true,
-        transmissionResolution: 128,
-        transmissionSamples: 4,
-        maxWaves: 3,
-      };
+                useTransmissionMaterial: true,
+                transmissionResolution: 128,
+                transmissionSamples: 4,
+                maxWaves: 3,
+            };
 
-    case 'low':
-      return {
-        tier,
-        maxDpr: 1,
-        antialias: false,
+        case 'low':
+            return {
+                tier,
+                maxDpr: 1,
+                antialias: false,
 
-        torusSegments: [16, 32],
-        sphereSegments: [16, 16],
-        orbitSegments: 48,
+                torusSegments: [16, 32],
+                sphereSegments: [16, 16],
+                orbitSegments: 48,
 
-        enableBloom: true,
-        enableChromaticAberration: false,
-        enableNoise: false,
-        enableVignette: false,
+                enableBloom: true,
+                enableChromaticAberration: false,
+                enableNoise: false,
+                enableVignette: false,
 
-        // На слабых устройствах MeshTransmissionMaterial слишком дорог —
-        // заменяем на MeshPhysicalMaterial
-        useTransmissionMaterial: false,
-        transmissionResolution: 64,
-        transmissionSamples: 2,
-        maxWaves: 2,
-      };
-  }
+                // На слабых устройствах MeshTransmissionMaterial слишком дорог —
+                // заменяем на MeshPhysicalMaterial
+                useTransmissionMaterial: false,
+                transmissionResolution: 64,
+                transmissionSamples: 2,
+                maxWaves: 2,
+            };
+    }
 }
 
 /**
@@ -212,18 +212,18 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
  * ```
  */
 export function usePerformanceTier(): PerformanceConfig {
-  return useMemo(() => {
-    const tier = detectPerformanceTier();
-    const config = buildConfig(tier);
+    return useMemo(() => {
+        const tier = detectPerformanceTier();
+        const config = buildConfig(tier);
 
-    if (import.meta.env.DEV) {
-      console.log(
-        `%c[Performance] Tier: ${tier.toUpperCase()}`,
-        'color: #4cc9f0; font-weight: bold;',
-        config,
-      );
-    }
+        if (import.meta.env.DEV) {
+            console.log(
+                `%c[Performance] Tier: ${tier.toUpperCase()}`,
+                'color: #4cc9f0; font-weight: bold;',
+                config,
+            );
+        }
 
-    return config;
-  }, []);
+        return config;
+    }, []);
 }
