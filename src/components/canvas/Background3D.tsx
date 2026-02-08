@@ -7,14 +7,18 @@ import {
 } from '@react-three/postprocessing';
 import { Preload } from '@react-three/drei';
 import { HalfFloatType } from 'three';
-import { OrbitalWaves } from './OrbitalWaves';
+import { OrbitalWaves, type OrbitLayoutPreset } from './OrbitalWaves';
 import { defaultConfig } from '../../config/defaults';
 import { maxPerformanceConfig } from '../../config/performance';
 
 type RuntimeQuality = 0 | 1 | 2;
 const MAX_QUALITY: RuntimeQuality = 2;
 
-export const Background3D = () => {
+interface Background3DProps {
+    layoutPreset: OrbitLayoutPreset;
+}
+
+export const Background3D = ({ layoutPreset }: Background3DProps) => {
     const perf = maxPerformanceConfig;
     const quality = MAX_QUALITY;
     const dpr = perf.maxDpr;
@@ -125,6 +129,7 @@ export const Background3D = () => {
                         waveConfig={defaultConfig.wave}
                         perf={perf}
                         quality={quality}
+                        layoutPreset={layoutPreset}
                     />
                     <Preload all />
 

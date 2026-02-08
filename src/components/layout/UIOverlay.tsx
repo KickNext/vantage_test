@@ -2,18 +2,35 @@ import React, { useEffect, useState } from 'react';
 
 interface UIOverlayProps {
     onRestart: () => void;
+    presetNumber: number;
+    runId: number;
 }
 
-export const UIOverlay: React.FC<UIOverlayProps> = ({ onRestart }) => {
+export const UIOverlay: React.FC<UIOverlayProps> = ({ onRestart, presetNumber, runId }) => {
     const [visible, setVisible] = useState(false);
+    const [presetVisible, setPresetVisible] = useState(false);
 
     useEffect(() => {
+        setVisible(false);
+        setPresetVisible(false);
+
+        const revealPresetTimer = setTimeout(() => {
+            setPresetVisible(true);
+        }, 40);
+        const hidePresetTimer = setTimeout(() => {
+            setPresetVisible(false);
+        }, 2200);
+
         // Sync with intro duration (6.0s) + small buffer
         const timer = setTimeout(() => {
             setVisible(true);
         }, 6500);
-        return () => clearTimeout(timer);
-    }, []);
+        return () => {
+            clearTimeout(revealPresetTimer);
+            clearTimeout(hidePresetTimer);
+            clearTimeout(timer);
+        };
+    }, [runId]);
 
     return (
         <div style={{
@@ -25,6 +42,22 @@ export const UIOverlay: React.FC<UIOverlayProps> = ({ onRestart }) => {
             pointerEvents: 'none', // Allow clicks to pass through to canvas
             zIndex: 10
         }}>
+            <div style={{
+                position: 'absolute',
+                top: '24px',
+                left: '24px',
+                fontFamily: '"Orbitron", sans-serif',
+                fontSize: '24px',
+                fontWeight: 700,
+                letterSpacing: '0.18em',
+                color: '#ffffff',
+                textShadow: '0 0 20px rgba(255,255,255,0.45)',
+                opacity: presetVisible ? 0.78 : 0,
+                transform: presetVisible ? 'translateY(0)' : 'translateY(-8px)',
+                transition: 'opacity 0.6s ease, transform 0.6s ease',
+            }}>
+                {String(presetNumber).padStart(2, '0')}
+            </div>
             {/* Bottom Text Container */}
             <div style={{
                 position: 'absolute',

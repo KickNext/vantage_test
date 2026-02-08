@@ -31,9 +31,13 @@ interface OrbitData {
     geometry: BufferGeometry;
     pointCount: number;
     radius: number;
+    radiusX: number;
+    radiusZ: number;
+    phaseOffset: number;
     colorIndex: number;
     speed: number;
     rotationX: number;
+    rotationY: number;
     rotationZ: number;
 }
 
@@ -89,7 +93,16 @@ interface OrbitalWavesProps {
     waveConfig: typeof defaultConfig.wave;
     perf: PerformanceConfig;
     quality: 0 | 1 | 2;
+    layoutPreset: OrbitLayoutPreset;
 }
+
+export type OrbitLayoutPreset =
+    | 'cameraAware'
+    | 'pairedFan'
+    | 'waveArc'
+    | 'orbitalCrown'
+    | 'phaseLattice'
+    | 'meridianWeave';
 
 const INTRO_DELAY = 0.5;
 const DRAW_DURATION = 1.5;
@@ -97,8 +110,31 @@ const INTRO_DURATION = 6.0;
 const LIGHT_START = 3.5;
 const LOGO_VISIBILITY_EPSILON = 0.01;
 
-const easeInOutSine = (x: number): number => {
-    return -(Math.cos(Math.PI * x) - 1) / 2;
+const ORBIT_LAYOUT_CONFIG: Record<OrbitLayoutPreset, { baseRadius: number; radiusStep: number }> = {
+    cameraAware: {
+        baseRadius: 4.8,
+        radiusStep: 1.22,
+    },
+    pairedFan: {
+        baseRadius: 4,
+        radiusStep: 1.35,
+    },
+    waveArc: {
+        baseRadius: 4.4,
+        radiusStep: 1.28,
+    },
+    orbitalCrown: {
+        baseRadius: 4.9,
+        radiusStep: 1.18,
+    },
+    phaseLattice: {
+        baseRadius: 4.55,
+        radiusStep: 1.26,
+    },
+    meridianWeave: {
+        baseRadius: 4.7,
+        radiusStep: 1.22,
+    },
 };
 
 function getOrbitStartTime(index: number): number {
@@ -134,6 +170,154 @@ function getOrbitSegments(baseSegments: number, quality: 0 | 1 | 2): number {
     const targetSegments = Math.floor(baseSegments * qualityFactor * retinaFactor * segmentBoostFactor);
     const maxSegments = 256;
     return Math.min(maxSegments, Math.max(baseSegments, targetSegments));
+}
+
+function getOrbitPlacement(
+    index: number,
+    total: number,
+    preset: OrbitLayoutPreset,
+): Pick<OrbitData, 'rotationX' | 'rotationY' | 'rotationZ'> {
+    if (preset === 'pairedFan') {
+        if (total <= 1) {
+            return { rotationX: 0, rotationY: 0, rotationZ: 0 };
+        }
+
+        if (index === 0) {
+            return { rotationX: 0, rotationY: 0, rotationZ: 0 };
+        }
+
+        const pairCount = Math.ceil((total - 1) / 2);
+        const pairIndex = Math.floor((index - 1) / 2) + 1;
+        const direction = index % 2 === 0 ? 1 : -1;
+        const pairT = pairCount > 0 ? pairIndex / pairCount : 0;
+
+        const minTiltX = Math.PI * 0.03;
+        const maxTiltX = Math.PI * 0.16;
+        const maxTiltZ = Math.PI * 0.045;
+
+        const tiltX = minTiltX + (maxTiltX - minTiltX) * Math.pow(pairT, 0.9);
+        const tiltZ = maxTiltZ * (1 - pairT * 0.35);
+
+        return {
+            rotationX: direction * tiltX,
+            rotationY: 0,
+            rotationZ: direction * tiltZ,
+        };
+    }
+
+    if (preset === 'waveArc') {
+        if (total <= 1) {
+            return { rotationX: Math.PI * 0.17, rotationY: 0, rotationZ: 0 };
+        }
+
+        const normalized = index / (total - 1);
+        const centered = normalized * 2 - 1;
+        const arcWave = Math.sin(normalized * Math.PI * 2);
+        const detailWave = Math.cos(normalized * Math.PI * 3);
+
+        const baseTiltX = Math.PI * 0.17;
+        const waveTiltX = Math.PI * 0.035;
+        const baseFanZ = Math.PI * 0.014;
+        const detailFanZ = Math.PI * 0.008;
+
+        return {
+            rotationX: baseTiltX + arcWave * waveTiltX,
+            rotationY: 0,
+            rotationZ: centered * baseFanZ + detailWave * detailFanZ,
+        };
+    }
+
+    if (preset === 'orbitalCrown') {
+        if (total <= 1) {
+            return { rotationX: Math.PI * 0.16, rotationY: 0, rotationZ: Math.PI * 0.03 };
+        }
+
+        const normalized = index / (total - 1);
+        const crownPhase = normalized * Math.PI * 2;
+        const petalWave = Math.sin(crownPhase * 3);
+        const shoulderWave = Math.cos(crownPhase * 2);
+
+        const baseTiltX = Math.PI * 0.155;
+        const petalLiftX = Math.PI * 0.045;
+        const maxYawY = Math.PI / 2;
+        const rollWaveZ = Math.PI * 0.028;
+
+        return {
+            rotationX: baseTiltX + petalWave * petalLiftX,
+            rotationY: normalized * maxYawY,
+            rotationZ: shoulderWave * rollWaveZ,
+        };
+    }
+
+    if (preset === 'phaseLattice') {
+        if (total <= 1) {
+            return { rotationX: Math.PI * 0.18, rotationY: 0, rotationZ: 0 };
+        }
+
+        const normalized = index / (total - 1);
+        const centered = normalized * 2 - 1;
+        const phase = normalized * Math.PI * 2;
+        const lane = (index % 3) - 1; // -1, 0, 1
+        const laneTilt = lane * Math.PI * 0.055;
+        const swayWave = Math.sin(phase * 2.2);
+        const yawWave = Math.cos(phase * 1.7);
+        const altSign = index % 2 === 0 ? 1 : -1;
+
+        const baseTiltX = Math.PI * 0.11;
+        const swayTiltX = Math.PI * 0.03;
+        const yawFanY = Math.PI * 0.44;
+        const yawDetailY = Math.PI * 0.11;
+        const rollZ = Math.PI * 0.06;
+
+        return {
+            rotationX: baseTiltX + laneTilt + swayWave * swayTiltX,
+            rotationY: centered * yawFanY + yawWave * yawDetailY,
+            rotationZ: altSign * rollZ,
+        };
+    }
+
+    if (preset === 'meridianWeave') {
+        if (total <= 1) {
+            return { rotationX: Math.PI * 0.46, rotationY: 0, rotationZ: 0 };
+        }
+
+        const normalized = index / (total - 1);
+        const centered = normalized * 2 - 1;
+        const weaveWave = Math.sin(normalized * Math.PI * 4);
+        const shoulderWave = Math.cos(normalized * Math.PI * 3);
+        const sign = index % 2 === 0 ? 1 : -1;
+
+        const baseTiltX = Math.PI * 0.46;
+        const weaveTiltX = Math.PI * 0.08;
+        const fanY = Math.PI * 0.62;
+        const shoulderY = Math.PI * 0.08;
+        const weaveRollZ = Math.PI * 0.06;
+
+        return {
+            rotationX: baseTiltX + weaveWave * weaveTiltX,
+            rotationY: centered * fanY + shoulderWave * shoulderY,
+            rotationZ: sign * weaveRollZ,
+        };
+    }
+
+    if (total <= 1) {
+        return { rotationX: Math.PI * 0.19, rotationY: 0, rotationZ: 0 };
+    }
+
+    const normalized = index / (total - 1);
+    const centered = normalized * 2 - 1;
+    const centerWeight = 1 - Math.abs(centered);
+
+    // Camera-aware layout: keep one readable ring family angle with a tiny roll fan.
+    const baseTiltX = Math.PI * 0.19;
+    const centerLiftX = Math.PI * 0.025;
+    const maxFanZ = Math.PI * 0.028;
+
+    return {
+        rotationX: baseTiltX + centerWeight * centerLiftX,
+        rotationY: 0,
+        rotationZ: centered * maxFanZ,
+    };
 }
 
 function getWaveSlotRenderProfile(
@@ -229,7 +413,7 @@ const ImpulseWave = memo(function ImpulseWave({
             scaleGroup.visible = true;
             const orbit = orbits[data.orbitIndex];
             if (orbit) {
-                orbitPlane.rotation.set(orbit.rotationX, 0, orbit.rotationZ);
+                orbitPlane.rotation.set(orbit.rotationX, orbit.rotationY, orbit.rotationZ);
             }
             mat.color.set(waveColor);
             mat.roughness = waveRoughness;
@@ -303,7 +487,7 @@ const ImpulseWave = memo(function ImpulseWave({
     );
 });
 
-export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWavesProps) => {
+export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }: OrbitalWavesProps) => {
     const groupRef = useRef<Group>(null);
     const ambientLightRef = useRef<AmbientLight>(null);
     const mainLightRef = useRef<PointLight>(null);
@@ -314,6 +498,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const orbitGroupRefs = useRef<Array<Group | null>>([]);
     const orbitLineRefs = useRef<Array<Line2 | null>>([]);
     const orbitAnchorRefs = useRef<Array<Group | null>>([]);
+    const orbitSpinRefs = useRef<Array<Group | null>>([]);
 
     const hasCachedTransmissionFrame = useRef(false);
     const lastOrbitIndexRef = useRef<number>(-1);
@@ -409,15 +594,51 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     }, [quality]);
 
     const [orbits] = useState<OrbitData[]>(() => {
+        const orbitCount = 10;
         const segments = getOrbitSegments(perf.orbitSegments, quality);
+        const layoutConfig = ORBIT_LAYOUT_CONFIG[layoutPreset];
 
-        return Array.from({ length: 10 }).map((_, i) => {
-            const radius = 3 + i * 1.5;
+        return Array.from({ length: orbitCount }).map((_, i) => {
+            const normalized = orbitCount <= 1 ? 0 : i / (orbitCount - 1);
+            const radius = layoutConfig.baseRadius + i * layoutConfig.radiusStep;
+            let radiusX = radius;
+            let radiusZ = radius;
+            let phaseOffset = 0;
+
+            if (layoutPreset === 'phaseLattice') {
+                const ellipseTightness = 0.48 + 0.24 * Math.sin(normalized * Math.PI);
+                const majorScale = 1.12 + 0.12 * Math.cos(normalized * Math.PI * 2.5);
+                radiusX = radius * majorScale;
+                radiusZ = radius * ellipseTightness;
+                if (i % 2 === 1) {
+                    const temp = radiusX;
+                    radiusX = radiusZ;
+                    radiusZ = temp;
+                }
+                phaseOffset = normalized * Math.PI * 0.7 + (i % 2 === 0 ? 0 : Math.PI * 0.18);
+            } else if (layoutPreset === 'meridianWeave') {
+                const weaveCurve = Math.sin(normalized * Math.PI);
+                const minorAxisScale = 0.58 + 0.1 * Math.cos(normalized * Math.PI * 3);
+                const majorAxisScale = 1.22 - 0.16 * weaveCurve;
+
+                radiusX = radius * minorAxisScale;
+                radiusZ = radius * majorAxisScale;
+
+                if (i % 2 === 1) {
+                    const temp = radiusX;
+                    radiusX = radiusZ;
+                    radiusZ = temp;
+                }
+
+                phaseOffset = normalized * Math.PI * 1.3 + (i % 2 === 0 ? 0 : Math.PI * 0.5);
+            }
+
             const points: number[] = [];
+            const placement = getOrbitPlacement(i, orbitCount, layoutPreset);
 
             for (let j = 0; j <= segments; j++) {
-                const theta = (j / segments) * Math.PI * 2;
-                points.push(Math.cos(theta) * radius, 0, Math.sin(theta) * radius);
+                const theta = (j / segments) * Math.PI * 2 + phaseOffset;
+                points.push(Math.cos(theta) * radiusX, 0, Math.sin(theta) * radiusZ);
             }
 
             const geometry = new BufferGeometry();
@@ -427,10 +648,14 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                 geometry,
                 pointCount: segments + 1,
                 radius,
+                radiusX,
+                radiusZ,
+                phaseOffset,
                 colorIndex: i % 5,
                 speed: (Math.random() * 0.1 + 0.05) * (i % 2 === 0 ? 1 : -1),
-                rotationX: (Math.random() - 0.5) * Math.PI * 0.5,
-                rotationZ: (Math.random() - 0.5) * Math.PI * 0.2,
+                rotationX: placement.rotationX,
+                rotationY: placement.rotationY,
+                rotationZ: placement.rotationZ,
             };
         });
     });
@@ -717,7 +942,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                 opacity = 0;
             } else if (now <= window.end) {
                 const rawProgress = (now - window.start) / DRAW_DURATION;
-                drawProgress = easeInOutSine(rawProgress);
+                drawProgress = rawProgress;
                 opacity = 1;
                 isDrawing = true;
             } else {
@@ -725,14 +950,17 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                 opacity = 1;
             }
 
-            if (orbitGroup) {
-                orbitGroup.rotation.y += delta * orbit.speed;
+            const maxSegmentCount = Math.max(1, orbit.pointCount - 1);
+            const currentCount = Math.floor(drawProgress * maxSegmentCount);
+            let phaseProgress = drawProgress;
+
+            if (now > window.end) {
+                const postElapsed = now - window.end;
+                const targetCyclesPerSecond = Math.max(0.08, Math.abs(orbit.speed) / (Math.PI * 2));
+                phaseProgress = 1 + postElapsed * targetCyclesPerSecond;
             }
 
             if (orbitLine) {
-                const maxSegmentCount = Math.max(1, orbit.pointCount - 1);
-                const currentCount = Math.floor(drawProgress * maxSegmentCount);
-
                 if (runtime.lastDrawCount !== currentCount) {
                     orbitLine.geometry.instanceCount = currentCount;
                     runtime.lastDrawCount = currentCount;
@@ -745,10 +973,10 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             }
 
             if (orbitGroup && orbitAnchor && sphereMesh) {
-                if (runtime.lastProgress !== drawProgress) {
-                    const angle = drawProgress * Math.PI * 2;
-                    orbitAnchor.position.set(Math.cos(angle) * orbit.radius, 0, Math.sin(angle) * orbit.radius);
-                    runtime.lastProgress = drawProgress;
+                if (runtime.lastProgress !== phaseProgress) {
+                    const angle = phaseProgress * Math.PI * 2 + orbit.phaseOffset;
+                    orbitAnchor.position.set(Math.cos(angle) * orbit.radiusX, 0, Math.sin(angle) * orbit.radiusZ);
+                    runtime.lastProgress = phaseProgress;
                 }
 
                 const targetScale = opacity > 0.01 ? (isDrawing ? 0.09 : 0.06) : 0.0001;
@@ -936,23 +1164,32 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                             ref={(group) => {
                                 orbitGroupRefs.current[index] = group;
                             }}
-                            rotation={[orbit.rotationX, 0, orbit.rotationZ]}
+                            rotation={[orbit.rotationX, orbit.rotationY, orbit.rotationZ]}
                             scale={[directionScale, 1, 1]}
                         >
-                            <primitive
-                                object={orbitLines[index]}
-                                ref={(line: unknown) => {
-                                    orbitLineRefs.current[index] = line as Line2 | null;
-                                }}
-                            />
-
                             <group
-                                ref={(anchor) => {
-                                    orbitAnchorRefs.current[index] = anchor;
+                                ref={(spin) => {
+                                    orbitSpinRefs.current[index] = spin;
                                 }}
-                                position={[orbit.radius, 0, 0]}
-                                scale={[0.0001, 0.0001, 0.0001]}
-                            />
+                            >
+                                <primitive
+                                    object={orbitLines[index]}
+                                    ref={(line: unknown) => {
+                                        orbitLineRefs.current[index] = line as Line2 | null;
+                                    }}
+                                />
+                                <group
+                                    ref={(anchor) => {
+                                        orbitAnchorRefs.current[index] = anchor;
+                                    }}
+                                    position={[
+                                        Math.cos(orbit.phaseOffset) * orbit.radiusX,
+                                        0,
+                                        Math.sin(orbit.phaseOffset) * orbit.radiusZ,
+                                    ]}
+                                    scale={[0.0001, 0.0001, 0.0001]}
+                                />
+                            </group>
                         </group>
                     );
                 })}
