@@ -1,10 +1,23 @@
-import { useRef, useMemo, useState, useEffect } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useLoader } from '@react-three/fiber';
 import {
-    BufferGeometry, Float32BufferAttribute, AdditiveBlending,
-    Group, Mesh, TextureLoader, Color, AmbientLight, PointLight,
-    MeshBasicMaterial, Line, LineBasicMaterial, Material, Texture,
-    NoToneMapping
+    AdditiveBlending,
+    AmbientLight,
+    BufferGeometry,
+    Color,
+    DynamicDrawUsage,
+    Float32BufferAttribute,
+    Group,
+    InstancedMesh,
+    Line,
+    LineBasicMaterial,
+    Material,
+    Mesh,
+    MeshBasicMaterial,
+    NoToneMapping,
+    PointLight,
+    Texture,
+    TextureLoader,
 } from 'three';
 import { easing } from 'maath';
 import { MeshTransmissionMaterial, useFBO } from '@react-three/drei';
@@ -32,20 +45,16 @@ interface WaveProps {
     data: WaveData;
     config: typeof defaultConfig.wave;
     onComplete: (id: number) => void;
-    perf: PerformanceConfig;
-    /**
-     * Общая текстура сцены для рефракции.
-     * Когда передана — MeshTransmissionMaterial пропускает
-     * свой собственный FBO-рендер и использует эту текстуру.
-     * Один буфер на все волны = O(1) вместо O(N) рендеров.
-     */
+    renderConfig: WaveRenderConfig;
     sharedBuffer: Texture;
 }
 
-/**
- * Расширенный интерфейс для доступа к свойствам MeshTransmissionMaterial
- * и MeshPhysicalMaterial через единый тип.
- */
+interface WaveRenderConfig {
+    torusSegments: [number, number];
+    transmissionResolution: number;
+    transmissionSamples: number;
+}
+
 interface WaveMaterialProperties extends Material {
     distortion: number;
     thickness: number;
@@ -55,24 +64,78 @@ interface WaveMaterialProperties extends Material {
     color: Color;
 }
 
-const ImpulseWave = ({ orbit, data, config, onComplete, perf, sharedBuffer }: WaveProps) => {
+interface OrbitFrameState {
+    lastDrawCount: number;
+    lastOpacity: number;
+    lastProgress: number;
+    lastScale: number;
+}
+
+interface OrbitalWavesProps {
+    colors: typeof defaultConfig.colors;
+    waveConfig: typeof defaultConfig.wave;
+    perf: PerformanceConfig;
+    quality: 0 | 1 | 2;
+}
+
+const INTRO_DELAY = 0.5;
+const DRAW_DURATION = 1.5;
+const INTRO_DURATION = 6.0;
+const LIGHT_START = 3.5;
+
+const easeInOutSine = (x: number): number => {
+    return -(Math.cos(Math.PI * x) - 1) / 2;
+};
+
+function getOrbitStartTime(index: number): number {
+    let accumulatedDelay = 0;
+
+    for (let i = 1; i <= index; i++) {
+        let waitFactor = 0.1;
+        if (i === 1) waitFactor = 0.9;
+        else if (i === 2) waitFactor = 0.6;
+        else if (i === 3) waitFactor = 0.3;
+        else waitFactor = 0.12;
+
+        accumulatedDelay += DRAW_DURATION * waitFactor;
+    }
+
+    return INTRO_DELAY + accumulatedDelay;
+}
+
+function deactivateWaveMutable(wave: WaveData): void {
+    wave.active = false;
+}
+
+const ImpulseWave = memo(function ImpulseWave({
+    orbit,
+    data,
+    config,
+    onComplete,
+    renderConfig,
+    sharedBuffer,
+}: WaveProps) {
     const scaleGroupRef = useRef<Group>(null);
     const transmissionMeshRef = useRef<Mesh>(null);
 
-    // Wave parameters from props
     const {
-        speed: waveSpeed, maxScale: waveMaxScale, fadeInEnd, fadeOutStart,
-        color: waveColor, roughness: waveRoughness, thickness: waveThickness,
-        distortion: waveDistortion, opacity: waveOpacity,
-        chromaticAberration: waveChromAb, anisotropy: waveAnisotropy, distortionScale: waveDistortionScale
+        speed: waveSpeed,
+        maxScale: waveMaxScale,
+        fadeInEnd,
+        fadeOutStart,
+        color: waveColor,
+        roughness: waveRoughness,
+        thickness: waveThickness,
+        distortion: waveDistortion,
+        opacity: waveOpacity,
+        chromaticAberration: waveChromAb,
+        anisotropy: waveAnisotropy,
+        distortionScale: waveDistortionScale,
     } = config;
 
-    // Rotate to match orbit
-    // UseMemo is safe here because orbit prop only changes when the wave is reused for a different orbit
     const rotation = useMemo(() => [orbit.rotationX, 0, orbit.rotationZ] as [number, number, number], [orbit]);
 
     useFrame((state) => {
-        // Always ensuring resetting if inactive, though the exit condition usually handles it
         if (!data.active) {
             if (scaleGroupRef.current && scaleGroupRef.current.scale.x !== 0) {
                 scaleGroupRef.current.scale.set(0, 0, 0);
@@ -82,16 +145,14 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf, sharedBuffer }: Wa
 
         if (!scaleGroupRef.current) return;
 
-        const t = state.clock.getElapsedTime();
-        const elapsed = t - data.startTime;
+        const elapsed = state.clock.getElapsedTime() - data.startTime;
         const duration = 1 / waveSpeed;
         const cycle = Math.min(Math.max(elapsed / duration, 0), 1);
 
         if (cycle >= 1) {
             onComplete(data.id);
-            // Reset scale instantly to avoid visuals
-            if (scaleGroupRef.current) scaleGroupRef.current.scale.set(0, 0, 0);
-            // Reset material properties to ensure no ghostly artifacts
+
+            scaleGroupRef.current.scale.set(0, 0, 0);
             if (transmissionMeshRef.current) {
                 const mat = transmissionMeshRef.current.material as WaveMaterialProperties;
                 mat.distortion = 0;
@@ -101,15 +162,10 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf, sharedBuffer }: Wa
             return;
         }
 
-        // Expansion
-        // Fix: Start wave from the surface of the Black Hole (Radius 2).
-        // Torus Geometry is typically Radius 1. With tube 0.5, outer is 1.5.
-        // We need scale * 1.5 > 2.0. So minScale ~1.4. Let's start at 1.5 to be safe.
         const minScale = 1.5;
         const scale = minScale + (cycle * (waveMaxScale - minScale));
         scaleGroupRef.current.scale.set(scale, 1, scale);
 
-        // Intensity
         let intensity = 0;
         if (cycle < fadeInEnd) {
             intensity = cycle / fadeInEnd;
@@ -119,7 +175,6 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf, sharedBuffer }: Wa
             intensity = 1;
         }
 
-        // Material Logic
         if (transmissionMeshRef.current) {
             const mat = transmissionMeshRef.current.material as WaveMaterialProperties;
             mat.opacity = intensity * waveOpacity;
@@ -134,21 +189,14 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf, sharedBuffer }: Wa
     return (
         <group rotation={rotation}>
             <group ref={scaleGroupRef} scale={[0, 0, 0]}>
-                <mesh ref={transmissionMeshRef} rotation={[-Math.PI / 2, 0, 0]} frustumCulled={true}>
-                    <torusGeometry args={[1, 0.5, perf.torusSegments[0], perf.torusSegments[1]]} />
-                    {/*
-                      * MeshTransmissionMaterial используется на ВСЕХ тирах.
-                      * Ключевая оптимизация: проп buffer={sharedBuffer}
-                      * указывает материалу использовать общую текстуру сцены
-                      * вместо рендера собственного FBO.
-                      *
-                      * Без buffer: каждая волна = 1 полный рендер сцены.
-                      * С sharedBuffer: все волны делят 1 рендер = O(1).
-                      */}
+                <mesh ref={transmissionMeshRef} rotation={[-Math.PI / 2, 0, 0]} frustumCulled>
+                    <torusGeometry
+                        args={[1, 0.5, renderConfig.torusSegments[0], renderConfig.torusSegments[1]]}
+                    />
                     <MeshTransmissionMaterial
                         buffer={sharedBuffer}
-                        resolution={perf.transmissionResolution}
-                        samples={perf.transmissionSamples}
+                        resolution={renderConfig.transmissionResolution}
+                        samples={renderConfig.transmissionSamples}
                         thickness={0}
                         roughness={waveRoughness}
                         anisotropy={waveAnisotropy}
@@ -166,202 +214,97 @@ const ImpulseWave = ({ orbit, data, config, onComplete, perf, sharedBuffer }: Wa
             </group>
         </group>
     );
-}
+});
 
-interface OrbitComponentProps {
-    geometry: BufferGeometry;
-    speed: number;
-    rotationX: number;
-    rotationZ: number;
-    color: string;
-    radius: number;
-    index: number;
-    active: boolean;
-}
-
-// Sine easing for smoother curved start/end
-const easeInOutSine = (x: number): number => {
-    return -(Math.cos(Math.PI * x) - 1) / 2;
-};
-
-const Orbit = ({ geometry, speed, rotationX, rotationZ, color, radius, index }: OrbitComponentProps) => {
-    const groupRef = useRef<Group>(null);
-    const lineRef = useRef<Line<BufferGeometry, LineBasicMaterial>>(null);
-    const sphereRef = useRef<Mesh>(null);
-
-    useFrame((state, delta) => {
-        if (!groupRef.current) return;
-
-        const t = state.clock.getElapsedTime();
-        const introDelay = 0.5; // Global waiting before start
-
-        // Timing Configuration
-        const drawDuration = 1.5;
-
-        // Dynamic Start Time Calculation
-        // "Accelerating cascade":
-        // 1st->2nd gap: Large (0.9) - "First second ok"
-        // 2nd->3rd gap: Medium (0.6) - Start acceleration
-        // 3rd->4th gap: Short (0.3)  - Snap
-        // Rest: Very short (0.1)     - Machine gun fire
-        let accumulatedDelay = 0;
-        for (let i = 1; i <= index; i++) {
-            let waitFactor = 0.1;
-            if (i === 1) waitFactor = 0.9;
-            else if (i === 2) waitFactor = 0.6;
-            else if (i === 3) waitFactor = 0.3;
-            else waitFactor = 0.12;
-
-            accumulatedDelay += drawDuration * waitFactor;
-        }
-
-        const start = introDelay + accumulatedDelay;
-        const end = start + drawDuration;
-
-        let drawProgress = 0;
-        let opacity = 0;
-
-        if (t < start) {
-            drawProgress = 0;
-            opacity = 0;
-        } else if (t >= start && t <= end) {
-            const rawProgress = (t - start) / drawDuration;
-            drawProgress = easeInOutSine(rawProgress);
-            opacity = 1.0;
-        } else {
-            drawProgress = 1;
-            opacity = 0.6; // Settled state
-        }
-
-        // 1. Continuous Rotation
-        groupRef.current.rotation.y += delta * speed;
-
-        // 2. Draw Animation (Update line geometry)
-        if (lineRef.current) {
-            // Количество точек = сегменты + 1
-            const pointsCount = lineRef.current.geometry.getAttribute('position').count;
-            const currentCount = Math.floor(drawProgress * pointsCount);
-            // setDrawRange(start, count)
-            lineRef.current.geometry.setDrawRange(0, currentCount);
-            lineRef.current.material.opacity = opacity;
-        }
-
-        // 3. Planetoid Leading the Line
-        if (sphereRef.current) {
-            // Visibility: Only visible while drawing or fully drawn
-            sphereRef.current.visible = opacity > 0.01;
-
-            // Position Calculation
-            const angle = drawProgress * Math.PI * 2;
-            const x = Math.cos(angle) * radius;
-            const z = Math.sin(angle) * radius;
-
-            sphereRef.current.position.set(x, 0, z);
-
-            // Scale effect
-            const isDrawing = t >= start && t <= end;
-            const baseScale = 0.06;
-            const scale = isDrawing ? baseScale * 1.5 : baseScale;
-            sphereRef.current.scale.setScalar(scale);
-        }
-    });
-
-    // If speed is negative (CW rotation), we want the natural CW geometry (scale 1).
-    // If speed is positive (CCW rotation), we want to flip geometry to be CCW (scale -1).
-    // Natural geometry (cos, 0, sin) travels X -> Z which is clockwise in ThreeJS (Right -> Bottom).
-    const directionScale = speed > 0 ? -1 : 1;
-
-    return (
-        <group ref={groupRef} rotation={[rotationX, 0, rotationZ]} scale={[directionScale, 1, 1]}>
-            {/* Using basic 'line' instead of 'lineLoop' to allow open drawing without closing the gap immediately */}
-            {/* @ts-expect-error — R3F line primitive конфликтует с SVG line в JSX типах */}
-            <line ref={lineRef} geometry={geometry}>
-                <lineBasicMaterial color={color} transparent opacity={0} blending={AdditiveBlending} linewidth={1} />
-            </line>
-
-            <mesh ref={sphereRef} position={[radius, 0, 0]}>
-                <sphereGeometry args={[1, 16, 16]} />
-                <meshBasicMaterial color="#ffffff" toneMapped={false} />
-            </mesh>
-        </group>
-    )
-}
-
-interface OrbitalWavesProps {
-    colors: typeof defaultConfig.colors;
-    waveConfig: typeof defaultConfig.wave;
-    perf: PerformanceConfig;
-}
-
-export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) => {
+export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWavesProps) => {
     const groupRef = useRef<Group>(null);
     const ambientLightRef = useRef<AmbientLight>(null);
     const mainLightRef = useRef<PointLight>(null);
     const logoMaterialRef = useRef<MeshBasicMaterial>(null);
-
-    /** Группа волн — скрывается на время рендера в shared FBO */
     const wavesGroupRef = useRef<Group>(null);
+    const orbitSphereMeshRef = useRef<InstancedMesh>(null);
 
-    /**
-     * Счётчик кадров для throttle FBO-рендера на мобилках.
-     * На high-тире рендерим каждый кадр (fboSkip=0),
-     * на medium/low — каждый 2-й/3-й (fboSkip=1/2).
-     * Рефракционная текстура низкорезолюшн, пропуск кадров незаметен.
-     */
+    const orbitGroupRefs = useRef<Array<Group | null>>([]);
+    const orbitLineRefs = useRef<Array<Line<BufferGeometry, LineBasicMaterial> | null>>([]);
+    const orbitAnchorRefs = useRef<Array<Group | null>>([]);
+
     const fboFrameCounter = useRef(0);
-    const fboRenderInterval = perf.tier === 'high' ? 1 : perf.tier === 'medium' ? 2 : 3;
-
-    /**
-     * Общий FBO для рефракции.
-     * Сцена рендерится сюда один раз за кадр (без волн),
-     * затем текстура передаётся каждому MeshTransmissionMaterial
-     * через проп buffer — материал пропускает собственный FBO.
-     * Разрешение адаптивно: high=256, medium=128, low=64.
-     */
-    const sharedFbo = useFBO(perf.transmissionResolution, perf.transmissionResolution);
-
-    // Load Logo Texture
-    const logoTexture = useLoader(TextureLoader, import.meta.env.BASE_URL + 'logo_vantage.svg');
-
-    // Use passed colors
-    const orbitColors = colors.orbits;
-
-    // Entrance state
-    const [active, setActive] = useState(false);
-
-    // Wave Management
-    // Кол-во волн ограничено perf.maxWaves
-    const [waves, setWaves] = useState<WaveData[]>(() =>
-        Array.from({ length: perf.maxWaves }).map((_, i) => ({
-            id: i,
-            active: false,
-            startTime: 0,
-            orbitIndex: 0
-        }))
-    );
-
     const lastOrbitIndices = useRef<number[]>([]);
     const lastActiveWaveId = useRef<number>(-1);
-    const hasFiredIntroWave = useRef<boolean>(false);
-    const triggerQueue = useRef<boolean>(false);
-
-    /**
-     * Кэшированный экземпляр Color для переиспользования в useFrame.
-     * Избегаем создания new Color() на каждом кадре,
-     * что снижает нагрузку на GC.
-     */
+    const hasFiredIntroWave = useRef(false);
+    const triggerQueue = useRef(false);
     const cachedColor = useRef(new Color());
+    const targetRotation = useRef<[number, number, number]>([0, 0, 0]);
 
-    /** Орбиты с адаптивным кол-вом сегментов */
-    const [orbits] = useState(() => {
+    const fboRenderInterval = useMemo(() => {
+        if (quality === 2) return perf.tier === 'high' ? 1 : 2;
+        if (quality === 1) return perf.tier === 'high' ? 2 : 3;
+        return 4;
+    }, [perf.tier, quality]);
+
+    const waveRenderConfig = useMemo<WaveRenderConfig>(() => {
+        const [baseRadial, baseTubular] = perf.torusSegments;
+        const segmentScale = quality === 2 ? 1 : quality === 1 ? 0.82 : 0.68;
+
+        const torusSegments: [number, number] = [
+            Math.max(16, Math.floor(baseRadial * segmentScale)),
+            Math.max(32, Math.floor(baseTubular * segmentScale)),
+        ];
+
+        const transmissionResolution =
+            quality === 2
+                ? perf.transmissionResolution
+                : quality === 1
+                  ? Math.max(96, Math.floor(perf.transmissionResolution * 0.75))
+                  : Math.max(64, Math.floor(perf.transmissionResolution * 0.55));
+
+        const transmissionSamples =
+            quality === 2
+                ? perf.transmissionSamples
+                : quality === 1
+                  ? Math.max(2, perf.transmissionSamples - 2)
+                  : 1;
+
+        return {
+            torusSegments,
+            transmissionResolution,
+            transmissionSamples,
+        };
+    }, [perf.torusSegments, perf.transmissionResolution, perf.transmissionSamples, quality]);
+
+    const sharedFbo = useFBO(
+        waveRenderConfig.transmissionResolution,
+        waveRenderConfig.transmissionResolution,
+    );
+
+    const logoTexture = useLoader(TextureLoader, import.meta.env.BASE_URL + 'logo_vantage.svg');
+
+    const orbitSphereSegments = useMemo<[number, number]>(() => {
+        if (quality === 0) return [8, 8];
+        if (quality === 1) return perf.tier === 'high' ? [12, 12] : [10, 10];
+        if (perf.tier === 'low') return [10, 10];
+        if (perf.tier === 'medium') return [12, 12];
+        return [16, 16];
+    }, [perf.tier, quality]);
+
+    const coreSphereSegments = useMemo<[number, number]>(() => {
+        if (quality === 2) return [20, 20];
+        if (quality === 1) return [14, 14];
+        return [10, 10];
+    }, [quality]);
+
+    const [orbits] = useState<OrbitData[]>(() => {
         const segments = perf.orbitSegments;
+
         return Array.from({ length: 10 }).map((_, i) => {
             const radius = 3 + i * 1.5;
-            const points = [];
+            const points: number[] = [];
+
             for (let j = 0; j <= segments; j++) {
                 const theta = (j / segments) * Math.PI * 2;
                 points.push(Math.cos(theta) * radius, 0, Math.sin(theta) * radius);
             }
+
             const geometry = new BufferGeometry();
             geometry.setAttribute('position', new Float32BufferAttribute(points, 3));
 
@@ -376,62 +319,224 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
         });
     });
 
-    const triggerWaveAction = (state: { clock: { getElapsedTime: () => number } }) => {
-        const availableWaveIndex = waves.findIndex(w => !w.active);
+    const orbitDrawWindows = useMemo(
+        () =>
+            orbits.map((_, index) => {
+                const start = getOrbitStartTime(index);
+                return { start, end: start + DRAW_DURATION };
+            }),
+        [orbits],
+    );
 
-        if (availableWaveIndex !== -1) {
-            const now = state.clock.getElapsedTime();
-            const orbitCount = 10;
+    const orbitLines = useMemo(
+        () =>
+            orbits.map(
+                (orbit) =>
+                    new Line(
+                        orbit.geometry,
+                        new LineBasicMaterial({
+                            color: colors.orbits[orbit.colorIndex],
+                            transparent: true,
+                            opacity: 0,
+                            blending: AdditiveBlending,
+                            linewidth: 1,
+                        }),
+                    ),
+            ),
+        [colors.orbits, orbits],
+    );
 
-            let nextIndex = Math.floor(Math.random() * orbitCount);
-            // Avoid repeating recent orbits
-            let attempts = 0;
-            while (lastOrbitIndices.current.includes(nextIndex) && attempts < 10) {
-                nextIndex = Math.floor(Math.random() * orbitCount);
-                attempts++;
-            }
-            const newHistory = [nextIndex, ...lastOrbitIndices.current];
-            if (newHistory.length > 3) newHistory.pop();
-            lastOrbitIndices.current = newHistory;
+    const orbitFrameStateRef = useRef<OrbitFrameState[]>(
+        Array.from({ length: orbits.length }).map(() => ({
+            lastDrawCount: -1,
+            lastOpacity: -1,
+            lastProgress: -1,
+            lastScale: -1,
+        })),
+    );
 
-            const newWaveId = waves[availableWaveIndex].id;
-            lastActiveWaveId.current = newWaveId;
-
-            setWaves(prev => {
-                const copy = [...prev];
-                copy[availableWaveIndex] = {
-                    ...copy[availableWaveIndex],
-                    active: true,
-                    startTime: now,
-                    orbitIndex: nextIndex
-                };
-                return copy;
-            });
-        }
-    };
-
-    const handlePointerDown = () => {
-        triggerQueue.current = true;
-    };
-
-    // Global listener for background clicks
     useEffect(() => {
-        const onGlobalClick = () => {
-            triggerQueue.current = true;
+        return () => {
+            for (const orbit of orbits) {
+                orbit.geometry.dispose();
+            }
         };
-        window.addEventListener('pointerdown', onGlobalClick);
-        return () => window.removeEventListener('pointerdown', onGlobalClick);
+    }, [orbits]);
+
+    useEffect(() => {
+        return () => {
+            for (const orbitLine of orbitLines) {
+                orbitLine.material.dispose();
+            }
+        };
+    }, [orbitLines]);
+
+    useEffect(() => {
+        const sphereMesh = orbitSphereMeshRef.current;
+        if (!sphereMesh) return;
+        sphereMesh.instanceMatrix.setUsage(DynamicDrawUsage);
     }, []);
 
-    useFrame((state, delta) => {
-        // Auto-activate on mount/first frame
-        if (!active) setActive(true);
+    const maxActiveWaves = useMemo(() => {
+        if (quality === 2) return perf.maxWaves;
+        if (quality === 1) return Math.max(2, perf.maxWaves - 1);
+        return Math.max(1, perf.maxWaves - 2);
+    }, [perf.maxWaves, quality]);
 
-        // ── Shared FBO ──────────────────────────────────────────
-        // Рендерим сцену без волн в общий буфер.
-        // На mobile — не каждый кадр (throttle), т.к. рефракционная
-        // текстура низкорезолюшн и разницу между кадрами не видно.
-        if (wavesGroupRef.current) {
+    const [wavePool] = useState<WaveData[]>(() =>
+        Array.from({ length: perf.maxWaves }).map((_, i) => ({
+            id: i,
+            active: false,
+            startTime: 0,
+            orbitIndex: 0,
+        })),
+    );
+
+    const wavesRef = useRef<WaveData[]>(wavePool);
+
+    useEffect(() => {
+        const waves = wavesRef.current;
+        for (let i = maxActiveWaves; i < waves.length; i++) {
+            waves[i].active = false;
+        }
+    }, [maxActiveWaves]);
+
+    const triggerWaveAction = useCallback((state: { clock: { getElapsedTime: () => number } }) => {
+        const waves = wavesRef.current;
+        const activationLimit = Math.min(maxActiveWaves, waves.length);
+
+        let availableWaveIndex = -1;
+        for (let i = 0; i < activationLimit; i++) {
+            if (!waves[i].active) {
+                availableWaveIndex = i;
+                break;
+            }
+        }
+
+        if (availableWaveIndex === -1) return;
+
+        const now = state.clock.getElapsedTime();
+        const orbitCount = orbits.length;
+
+        let nextOrbitIndex = Math.floor(Math.random() * orbitCount);
+        let attempts = 0;
+        while (lastOrbitIndices.current.includes(nextOrbitIndex) && attempts < 10) {
+            nextOrbitIndex = Math.floor(Math.random() * orbitCount);
+            attempts++;
+        }
+
+        const history = [nextOrbitIndex, ...lastOrbitIndices.current];
+        if (history.length > 3) history.pop();
+        lastOrbitIndices.current = history;
+
+        const nextWave = waves[availableWaveIndex];
+        if (!nextWave || nextWave.active) return;
+
+        nextWave.active = true;
+        nextWave.startTime = now;
+        nextWave.orbitIndex = nextOrbitIndex;
+        lastActiveWaveId.current = nextWave.id;
+    }, [maxActiveWaves, orbits.length]);
+
+    const handlePointerDown = useCallback(() => {
+        triggerQueue.current = true;
+    }, []);
+
+    useEffect(() => {
+        window.addEventListener('pointerdown', handlePointerDown);
+        return () => window.removeEventListener('pointerdown', handlePointerDown);
+    }, [handlePointerDown]);
+
+    useFrame((state, delta) => {
+        const now = state.clock.getElapsedTime();
+
+        const sceneGroup = groupRef.current;
+        if (sceneGroup) {
+            const x = state.pointer.x * 0.2;
+            const y = -state.pointer.y * 0.2;
+            const nextRotation = targetRotation.current;
+            nextRotation[0] = y;
+            nextRotation[1] = x;
+            nextRotation[2] = 0;
+            easing.dampE(sceneGroup.rotation, nextRotation, 1.5, delta);
+            sceneGroup.updateMatrixWorld(true);
+        }
+
+        const sphereMesh = orbitSphereMeshRef.current;
+        let hasSphereMatrixUpdates = false;
+
+        for (let i = 0; i < orbits.length; i++) {
+            const orbit = orbits[i];
+            const window = orbitDrawWindows[i];
+            const runtime = orbitFrameStateRef.current[i];
+            const orbitGroup = orbitGroupRefs.current[i];
+            const orbitLine = orbitLineRefs.current[i];
+            const orbitAnchor = orbitAnchorRefs.current[i];
+
+            if (!runtime) continue;
+
+            let drawProgress = 0;
+            let opacity = 0;
+            let isDrawing = false;
+
+            if (now < window.start) {
+                drawProgress = 0;
+                opacity = 0;
+            } else if (now <= window.end) {
+                const rawProgress = (now - window.start) / DRAW_DURATION;
+                drawProgress = easeInOutSine(rawProgress);
+                opacity = 1;
+                isDrawing = true;
+            } else {
+                drawProgress = 1;
+                opacity = 0.6;
+            }
+
+            if (orbitGroup) {
+                orbitGroup.rotation.y += delta * orbit.speed;
+            }
+
+            if (orbitLine) {
+                const pointsCount = orbitLine.geometry.getAttribute('position').count;
+                const currentCount = Math.floor(drawProgress * pointsCount);
+
+                if (runtime.lastDrawCount !== currentCount) {
+                    orbitLine.geometry.setDrawRange(0, currentCount);
+                    runtime.lastDrawCount = currentCount;
+                }
+
+                if (runtime.lastOpacity !== opacity) {
+                    orbitLine.material.opacity = opacity;
+                    runtime.lastOpacity = opacity;
+                }
+            }
+
+            if (orbitGroup && orbitAnchor && sphereMesh) {
+                if (runtime.lastProgress !== drawProgress) {
+                    const angle = drawProgress * Math.PI * 2;
+                    orbitAnchor.position.set(Math.cos(angle) * orbit.radius, 0, Math.sin(angle) * orbit.radius);
+                    runtime.lastProgress = drawProgress;
+                }
+
+                const targetScale = opacity > 0.01 ? (isDrawing ? 0.09 : 0.06) : 0.0001;
+                if (runtime.lastScale !== targetScale) {
+                    orbitAnchor.scale.setScalar(targetScale);
+                    runtime.lastScale = targetScale;
+                }
+
+                orbitGroup.updateMatrixWorld(true);
+                sphereMesh.setMatrixAt(i, orbitAnchor.matrixWorld);
+                hasSphereMatrixUpdates = true;
+            }
+        }
+
+        if (sphereMesh && hasSphereMatrixUpdates) {
+            sphereMesh.instanceMatrix.needsUpdate = true;
+        }
+
+        const hasActiveWaves = wavesRef.current.some((wave) => wave.active);
+
+        if (hasActiveWaves && wavesGroupRef.current) {
             fboFrameCounter.current++;
             if (fboFrameCounter.current >= fboRenderInterval) {
                 fboFrameCounter.current = 0;
@@ -447,34 +552,31 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
 
                 state.gl.toneMapping = oldToneMapping;
             }
+        } else {
+            fboFrameCounter.current = 0;
         }
 
-        const now = state.clock.getElapsedTime();
-
-        // 4. Update Logo Animation (Sync with last active wave)
         if (lastActiveWaveId.current !== -1 && logoMaterialRef.current) {
-            const activeWave = waves.find(w => w.id === lastActiveWaveId.current);
-            if (activeWave && activeWave.active) {
-                const elapsed = now - activeWave.startTime;
+            let activeWave: WaveData | undefined;
+            for (const wave of wavesRef.current) {
+                if (wave.id === lastActiveWaveId.current) {
+                    activeWave = wave;
+                    break;
+                }
+            }
 
-                // Replicate ImpulseWave timing logic but faster
+            if (activeWave?.active) {
+                const elapsed = now - activeWave.startTime;
                 const duration = 1 / waveConfig.speed;
                 const cycle = Math.min(Math.max(elapsed / duration, 0), 1);
 
-                // --- Logo Overlay Custom Timing ---
-                // 1. "Fade out faster than wave": Snappier feel.
-                // Start fading almost immediately (15%) and be gone by mid-wave (40%).
                 const logoFadeStart = 0.15;
-                const logoFadeEnd = 0.40;
-
-                // 2. "Glow at beginning": Boost color intensity during the first 15%
-                // Delayed slightly strictly to allow the wave to emerge first visually
+                const logoFadeEnd = 0.4;
                 const startDelay = 0.02;
                 const glowDuration = 0.15;
-                // Glow strength определяет базовую интенсивность свечения лого
+                const fadeIn = 0.05;
 
                 let intensity = 0;
-                const fadeIn = 0.05;
 
                 if (cycle < startDelay) {
                     intensity = 0;
@@ -482,120 +584,137 @@ export const OrbitalWaves = ({ colors, waveConfig, perf }: OrbitalWavesProps) =>
                     intensity = (cycle - startDelay) / fadeIn;
                 } else if (cycle > logoFadeStart) {
                     const fadeProgress = (cycle - logoFadeStart) / (logoFadeEnd - logoFadeStart);
-                    intensity = 1.0 - Math.min(Math.max(fadeProgress, 0), 1);
+                    intensity = 1 - Math.min(Math.max(fadeProgress, 0), 1);
                 } else {
                     intensity = 1;
                 }
 
-                // Apply to logo
                 logoMaterialRef.current.opacity = intensity;
 
-                // Set color with Glow (Bloom)
-                // Переиспользуем кэшированный Color, чтобы не аллоцировать на каждом кадре
-                const targetColorHex = orbitColors[orbits[activeWave.orbitIndex].colorIndex];
+                const targetColorHex = colors.orbits[orbits[activeWave.orbitIndex].colorIndex];
                 const activeColor = cachedColor.current.set(targetColorHex);
 
                 if (cycle > startDelay && cycle < startDelay + glowDuration) {
                     const glowProgress = (cycle - startDelay) / glowDuration;
                     const glowFalloff = 1 - glowProgress;
-                    const boost = 1 + (glowFalloff * 2.0); // Boost up to 3x
-                    activeColor.multiplyScalar(boost);
+                    activeColor.multiplyScalar(1 + glowFalloff * 2);
                 }
 
                 logoMaterialRef.current.color.copy(activeColor);
-
             } else {
-                // Fade out smoothly if wave finishes or no wave
                 easing.damp(logoMaterialRef.current, 'opacity', 0, 0.5, delta);
             }
         }
 
-        // Process Trigger Queue
         if (triggerQueue.current) {
             triggerQueue.current = false;
             triggerWaveAction(state);
         }
 
-        if (groupRef.current) {
-            // ENTRANCE ANIMATION: "Loading Sequence"
-            // 1. Scale fixed at 1 (No zoom out, just drawing)
-            groupRef.current.scale.set(1, 1, 1);
+        if (now > INTRO_DURATION && !hasFiredIntroWave.current) {
+            hasFiredIntroWave.current = true;
+            triggerWaveAction(state);
+        }
 
-            // 2. Rotation: Gentle stabilized drift relative to mouse
-            const x = state.pointer.x * 0.2;
-            const y = -state.pointer.y * 0.2; // Removed +0.5 offset so logo faces forward
-            easing.dampE(groupRef.current.rotation, [y, x, 0], 1.5, delta);
+        const ambientIntensity = now > LIGHT_START ? 0.4 : 0;
+        const mainIntensity = now > LIGHT_START ? 1.5 : 0;
 
-            // 3. Lights
-            // Intro sequence calculation:
-            // IntroDelay(0.5) + Sum(delays) + DrawDuration(1.5).
-            // Max accumulatedDelay ~3.8. End ~5.8s.
-            // Let's set it to 6.0s to be safe and crisp.
-            const introDuration = 6.0;
-            const t = now;
+        if (ambientLightRef.current) {
+            easing.damp(ambientLightRef.current, 'intensity', ambientIntensity, 2, delta);
+        }
 
-            // Auto-fire first wave
-            if (t > introDuration && !hasFiredIntroWave.current) {
-                hasFiredIntroWave.current = true;
-                triggerWaveAction(state);
-            }
-
-            const lightStart = 3.5;
-            const ambIntensity = t > lightStart ? 0.4 : 0;
-            const mainIntensity = t > lightStart ? 1.5 : 0;
-
-            if (ambientLightRef.current) easing.damp(ambientLightRef.current, 'intensity', ambIntensity, 2.0, delta);
-            if (mainLightRef.current) easing.damp(mainLightRef.current, 'intensity', mainIntensity, 2.0, delta);
+        if (mainLightRef.current) {
+            easing.damp(mainLightRef.current, 'intensity', mainIntensity, 2, delta);
         }
     });
 
-    const handleWaveComplete = (id: number) => {
-        setWaves(prev => {
-            return prev.map(w => w.id === id ? { ...w, active: false } : w);
-        });
-    };
+    const handleWaveComplete = useCallback((id: number) => {
+        for (const wave of wavesRef.current) {
+            if (wave.id === id) {
+                if (wave.active) deactivateWaveMutable(wave);
+                break;
+            }
+        }
+    }, []);
 
     return (
         <>
             <group ref={groupRef} onPointerDown={handlePointerDown} rotation={[0, 0, 0]}>
                 <ambientLight ref={ambientLightRef} intensity={0} />
                 <pointLight ref={mainLightRef} position={[10, 10, 10]} intensity={0} />
+                <pointLight position={[-5, 5, -5]} intensity={0.5} color="#ffffff" distance={20} />
 
-                {/* Rim light for the black hole effect - Fades in strictly */}
-                <pointLight position={[-5, 5, -5]} intensity={active ? 0.5 : 0} color="#ffffff" distance={20} />
-
-                {/* Central Black Hole: Replaces the planet */}
-                <mesh onClick={(e) => { e.stopPropagation(); handlePointerDown(); }}>
-                    <sphereGeometry args={[2, perf.sphereSegments[0], perf.sphereSegments[1]]} />
+                <mesh
+                    onClick={(event) => {
+                        event.stopPropagation();
+                        handlePointerDown();
+                    }}
+                >
+                    <sphereGeometry args={[2, coreSphereSegments[0], coreSphereSegments[1]]} />
                     <meshBasicMaterial color="#0a0a0a" />
                 </mesh>
 
-                {/* Dynamic Wave Impulses — в группе для скрытия при FBO */}
                 <group ref={wavesGroupRef}>
-                    {waves.map(wave => (
+                    {wavePool.map((wave) => (
                         <ImpulseWave
                             key={wave.id}
                             data={wave}
                             orbit={orbits[wave.orbitIndex]}
                             config={waveConfig}
                             onComplete={handleWaveComplete}
-                            perf={perf}
+                            renderConfig={waveRenderConfig}
                             sharedBuffer={sharedFbo.texture}
                         />
                     ))}
                 </group>
 
-                {/* Orbits */}
-                {orbits.map((orbit, i) => (
-                    <Orbit key={i} {...orbit} index={i} active={active} color={orbitColors[orbit.colorIndex]} />
-                ))}
+                {orbits.map((orbit, index) => {
+                    const directionScale = orbit.speed > 0 ? -1 : 1;
+                    return (
+                        <group
+                            key={index}
+                            ref={(group) => {
+                                orbitGroupRefs.current[index] = group;
+                            }}
+                            rotation={[orbit.rotationX, 0, orbit.rotationZ]}
+                            scale={[directionScale, 1, 1]}
+                        >
+                            <primitive
+                                object={orbitLines[index]}
+                                ref={(line: unknown) => {
+                                    orbitLineRefs.current[index] =
+                                        line as unknown as Line<BufferGeometry, LineBasicMaterial> | null;
+                                }}
+                            />
+
+                            <group
+                                ref={(anchor) => {
+                                    orbitAnchorRefs.current[index] = anchor;
+                                }}
+                                position={[orbit.radius, 0, 0]}
+                                scale={[0.0001, 0.0001, 0.0001]}
+                            />
+                        </group>
+                    );
+                })}
+
             </group>
 
-            {/* Vantage Logo Overlay - Outside rotations to always face camera */}
-            {/* Aspect Ratio 100:48 ~ 2.08. Black Hole Diameter = 4. Logo Width = 50% = 2. Height = 2 / 2.08 ~ 0.96 */}
+            <instancedMesh
+                ref={orbitSphereMeshRef}
+                args={[undefined, undefined, orbits.length]}
+                frustumCulled={false}
+            >
+                <sphereGeometry args={[1, orbitSphereSegments[0], orbitSphereSegments[1]]} />
+                <meshBasicMaterial color="#ffffff" toneMapped={false} />
+            </instancedMesh>
+
             <mesh
                 position={[0, 0, 2.2]}
-                onPointerDown={(e) => { e.stopPropagation(); handlePointerDown(); }}
+                onPointerDown={(event) => {
+                    event.stopPropagation();
+                    handlePointerDown();
+                }}
             >
                 <planeGeometry args={[2, 0.96]} />
                 <meshBasicMaterial

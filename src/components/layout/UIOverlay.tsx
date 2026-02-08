@@ -1,10 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import type { SceneType } from '../../types';
 
 interface UIOverlayProps {
-    currentScene: SceneType;
-    setScene: (scene: SceneType) => void;
-    toggleConfig: () => void;
     onRestart: () => void;
 }
 
