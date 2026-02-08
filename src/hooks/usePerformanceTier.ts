@@ -22,6 +22,9 @@ export interface PerformanceConfig {
     /** Уровень тира */
     readonly tier: PerformanceTier;
 
+    /** Является ли устройство мобильным */
+    readonly isMobile: boolean;
+
     /** Максимальный DPR (device pixel ratio) */
     readonly maxDpr: number;
 
@@ -91,10 +94,8 @@ function detectIsMobile(): boolean {
 /**
  * Определяет тир на основе характеристик устройства.
  */
-function detectPerformanceTier(): PerformanceTier {
+function detectPerformanceTier(isMobile: boolean): PerformanceTier {
     if (typeof window === 'undefined') return 'medium';
-
-    const isMobile = detectIsMobile();
     const cores = navigator.hardwareConcurrency || 4;
 
     // navigator.deviceMemory — нестандартный API (Chrome, Edge)
@@ -125,11 +126,12 @@ function detectPerformanceTier(): PerformanceTier {
 /**
  * Формирует конфиг производительности на основе тира.
  */
-function buildConfig(tier: PerformanceTier): PerformanceConfig {
+function buildConfig(tier: PerformanceTier, isMobile: boolean): PerformanceConfig {
     switch (tier) {
         case 'high':
             return {
                 tier,
+                isMobile,
                 maxDpr: 2,
                 antialias: true,
 
@@ -150,6 +152,7 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
         case 'medium':
             return {
                 tier,
+                isMobile,
                 maxDpr: 1.5,
                 // На medium сглаживание выполняется FXAA-проходом (без тяжелого MSAA).
                 antialias: true,
@@ -161,7 +164,7 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
                 enableBloom: true,
                 enableChromaticAberration: false,
                 enableNoise: false,
-                enableVignette: true,
+                enableVignette: !isMobile,
 
                 // Shared FBO: один рендер на все волны.
                 // Разрешение уменьшено для экономии GPU.
@@ -173,6 +176,7 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
         case 'low':
             return {
                 tier,
+                isMobile,
                 maxDpr: 1,
                 // На low оставляем только дешёвое сглаживание FXAA.
                 antialias: true,
@@ -211,8 +215,9 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
  */
 export function usePerformanceTier(): PerformanceConfig {
     return useMemo(() => {
-        const tier = detectPerformanceTier();
-        const config = buildConfig(tier);
+        const isMobile = detectIsMobile();
+        const tier = detectPerformanceTier(isMobile);
+        const config = buildConfig(tier, isMobile);
 
         if (import.meta.env.DEV) {
             console.log(

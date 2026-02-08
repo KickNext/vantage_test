@@ -1,20 +1,19 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useLoader } from '@react-three/fiber';
 import {
-    AdditiveBlending,
     AmbientLight,
     BufferGeometry,
     Color,
+    DoubleSide,
     DynamicDrawUsage,
     Float32BufferAttribute,
     Group,
     InstancedMesh,
-    Line,
-    LineBasicMaterial,
     Material,
     Mesh,
     MeshBasicMaterial,
     NoToneMapping,
+    NormalBlending,
     PointLight,
     Texture,
     TextureLoader,
@@ -22,8 +21,11 @@ import {
 } from 'three';
 import { easing } from 'maath';
 import { MeshTransmissionMaterial, useFBO } from '@react-three/drei';
+import { Line2 } from 'three/examples/jsm/lines/Line2.js';
+import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { defaultConfig } from '../../config/defaults';
-import type { PerformanceConfig } from '../../hooks/usePerformanceTier';
+import type { PerformanceConfig, PerformanceTier } from '../../hooks/usePerformanceTier';
 
 interface OrbitData {
     geometry: BufferGeometry;
@@ -72,6 +74,7 @@ interface WaveSlotRenderProfile {
     samples: number;
     distortionFactor: number;
     chromaticFactor: number;
+    opacityFactor: number;
 }
 
 interface OrbitFrameState {
@@ -92,6 +95,7 @@ const INTRO_DELAY = 0.5;
 const DRAW_DURATION = 1.5;
 const INTRO_DURATION = 6.0;
 const LIGHT_START = 3.5;
+const LOGO_VISIBILITY_EPSILON = 0.01;
 
 const easeInOutSine = (x: number): number => {
     return -(Math.cos(Math.PI * x) - 1) / 2;
@@ -117,19 +121,75 @@ function deactivateWaveMutable(wave: WaveData): void {
     wave.active = false;
 }
 
-function getWaveSlotRenderProfile(slotIndex: number, baseSamples: number): WaveSlotRenderProfile {
+function getOrbitLineBaseWidthPx(quality: 0 | 1 | 2, tier: PerformanceTier): number {
+    if (quality === 2 && tier === 'high') return 1.75;
+    if (quality === 2) return 1.6;
+    if (quality === 1) return 1.5;
+    return 1.35;
+}
+
+function getOrbitSegments(
+    baseSegments: number,
+    quality: 0 | 1 | 2,
+    tier: PerformanceTier,
+    isMobile: boolean,
+): number {
+    const qualityFactor = quality === 2 ? 1.45 : quality === 1 ? 1.3 : 1.15;
+    const retinaFactor = typeof window !== 'undefined' && (window.devicePixelRatio || 1) >= 1.5 ? 1.2 : 1;
+    const tierFactor = tier === 'high' ? 1.1 : 1;
+    const targetSegments = Math.floor(baseSegments * qualityFactor * retinaFactor * tierFactor);
+    const maxSegments = isMobile ? 128 : 256;
+    return Math.min(maxSegments, Math.max(baseSegments, targetSegments));
+}
+
+function getWaveSlotRenderProfile(
+    slotIndex: number,
+    baseSamples: number,
+    quality: 0 | 1 | 2,
+    tier: PerformanceTier,
+): WaveSlotRenderProfile {
     if (slotIndex <= 0) {
         return {
             samples: baseSamples,
             distortionFactor: 1,
             chromaticFactor: 1,
+            opacityFactor: 1,
         };
     }
 
+    if (slotIndex === 1) {
+        const slotOneSamples =
+            quality === 2 && tier === 'high'
+                ? Math.max(2, Math.floor(baseSamples * 0.55))
+                : Math.max(1, Math.floor(baseSamples * 0.5));
+
+        return {
+            samples: slotOneSamples,
+            distortionFactor: 0.78,
+            chromaticFactor: 0.72,
+            opacityFactor: 0.92,
+        };
+    }
+
+    if (slotIndex === 2) {
+        return {
+            samples: Math.max(1, Math.floor(baseSamples * 0.35)),
+            distortionFactor: 0.58,
+            chromaticFactor: 0.48,
+            opacityFactor: 0.84,
+        };
+    }
+
+    const fallbackSamples = 1;
+    const fallbackDistortion = quality === 0 ? 0.3 : quality === 1 ? 0.38 : 0.44;
+    const fallbackChromatic = quality === 0 ? 0.12 : quality === 1 ? 0.18 : 0.24;
+    const fallbackOpacity = quality === 0 ? 0.68 : quality === 1 ? 0.74 : 0.78;
+
     return {
-        samples: Math.max(1, Math.floor(baseSamples * 0.75)),
-        distortionFactor: 1,
-        chromaticFactor: 1,
+        samples: fallbackSamples,
+        distortionFactor: fallbackDistortion,
+        chromaticFactor: fallbackChromatic,
+        opacityFactor: fallbackOpacity,
     };
 }
 
@@ -214,7 +274,8 @@ const ImpulseWave = memo(function ImpulseWave({
             intensity = 1;
         }
 
-        mat.opacity = intensity * waveOpacity;
+        const opacity = intensity * waveOpacity * renderProfile.opacityFactor;
+        mat.opacity = opacity;
         mat.distortion = intensity * waveDistortion * renderProfile.distortionFactor;
         mat.thickness = intensity * waveThickness;
     });
@@ -260,7 +321,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const orbitSphereMeshRef = useRef<InstancedMesh>(null);
 
     const orbitGroupRefs = useRef<Array<Group | null>>([]);
-    const orbitLineRefs = useRef<Array<Line<BufferGeometry, LineBasicMaterial> | null>>([]);
+    const orbitLineRefs = useRef<Array<Line2 | null>>([]);
     const orbitAnchorRefs = useRef<Array<Group | null>>([]);
 
     const hasCachedTransmissionFrame = useRef(false);
@@ -268,11 +329,14 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const lastActiveWaveRef = useRef<WaveData | null>(null);
     const activeWavesCountRef = useRef(0);
     const hasFiredIntroWave = useRef(false);
+    const isManualWaveTriggerUnlocked = useRef(false);
+    const isLogoVisibleRef = useRef(false);
     const triggerQueue = useRef(false);
     const cachedColor = useRef(new Color());
     const targetRotation = useRef<[number, number, number]>([0, 0, 0]);
     const transmissionCacheVersion = useRef(0);
     const capturedTransmissionCacheVersion = useRef(-1);
+    const lastOrbitLineScreenWidthPxRef = useRef(Number.NaN);
 
     const waveRenderConfig = useMemo<WaveRenderConfig>(() => {
         const [baseRadial, baseTubular] = perf.torusSegments;
@@ -356,7 +420,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     }, [quality]);
 
     const [orbits] = useState<OrbitData[]>(() => {
-        const segments = perf.orbitSegments;
+        const segments = getOrbitSegments(perf.orbitSegments, quality, perf.tier, perf.isMobile);
 
         return Array.from({ length: 10 }).map((_, i) => {
             const radius = 3 + i * 1.5;
@@ -391,22 +455,35 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         [orbits],
     );
 
+    const orbitLineBaseWidthPx = useMemo(
+        () => getOrbitLineBaseWidthPx(quality, perf.tier),
+        [perf.tier, quality],
+    );
+
     const orbitLines = useMemo(
         () =>
-            orbits.map(
-                (orbit) =>
-                    new Line(
-                        orbit.geometry,
-                        new LineBasicMaterial({
-                            color: colors.orbits[orbit.colorIndex],
-                            transparent: true,
-                            opacity: 0,
-                            blending: AdditiveBlending,
-                            linewidth: 1,
-                        }),
-                    ),
-            ),
-        [colors.orbits, orbits],
+            orbits.map((orbit) => {
+                const lineGeometry = new LineGeometry();
+                const positions = orbit.geometry.getAttribute('position').array as Float32Array;
+                lineGeometry.setPositions(positions);
+                lineGeometry.instanceCount = 0;
+
+                const initialPixelRatio = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+                const lineMaterial = new LineMaterial({
+                    color: colors.orbits[orbit.colorIndex],
+                    transparent: true,
+                    opacity: 0,
+                    blending: NormalBlending,
+                    linewidth: orbitLineBaseWidthPx * initialPixelRatio,
+                    worldUnits: false,
+                    toneMapped: false,
+                    depthWrite: false,
+                    side: DoubleSide,
+                });
+
+                return new Line2(lineGeometry, lineMaterial);
+            }),
+        [colors.orbits, orbitLineBaseWidthPx, orbits],
     );
 
     const orbitFrameStateRef = useRef<OrbitFrameState[]>(
@@ -429,10 +506,24 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     useEffect(() => {
         return () => {
             for (const orbitLine of orbitLines) {
+                orbitLine.geometry.dispose();
                 orbitLine.material.dispose();
             }
         };
     }, [orbitLines]);
+
+    useEffect(() => {
+        lastOrbitLineScreenWidthPxRef.current = Number.NaN;
+    }, [orbitLines]);
+
+    useEffect(() => {
+        orbitFrameStateRef.current = Array.from({ length: orbits.length }).map(() => ({
+            lastDrawCount: -1,
+            lastOpacity: -1,
+            lastProgress: -1,
+            lastScale: -1,
+        }));
+    }, [orbitLines, orbits.length]);
 
     useEffect(() => {
         const sphereMesh = orbitSphereMeshRef.current;
@@ -458,9 +549,9 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const waveSlotRenderProfiles = useMemo(
         () =>
             Array.from({ length: wavePool.length }, (_, slotIndex) =>
-                getWaveSlotRenderProfile(slotIndex, waveRenderConfig.transmissionSamples),
+                getWaveSlotRenderProfile(slotIndex, waveRenderConfig.transmissionSamples, quality, perf.tier),
             ),
-        [wavePool.length, waveRenderConfig.transmissionSamples],
+        [perf.tier, quality, wavePool.length, waveRenderConfig.transmissionSamples],
     );
 
     const wavesRef = useRef<WaveData[]>(wavePool);
@@ -488,7 +579,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
 
     }, [maxActiveWaves]);
 
-    const triggerWaveAction = useCallback((state: { clock: { getElapsedTime: () => number } }) => {
+    const triggerWaveAction = useCallback((state: { clock: { getElapsedTime: () => number } }): boolean => {
         const waves = wavesRef.current;
         const activationLimit = Math.min(maxActiveWaves, waves.length);
         const hadActiveWaves = activeWavesCountRef.current > 0;
@@ -501,7 +592,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             }
         }
 
-        if (availableWaveIndex === -1) return;
+        if (availableWaveIndex === -1) return false;
 
         const now = state.clock.getElapsedTime();
         const orbitCount = orbits.length;
@@ -546,7 +637,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         lastOrbitIndexRef.current = nextOrbitIndex;
 
         const nextWave = waves[availableWaveIndex];
-        if (!nextWave || nextWave.active) return;
+        if (!nextWave || nextWave.active) return false;
 
         nextWave.active = true;
         nextWave.startTime = now;
@@ -562,9 +653,12 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             transmissionCacheVersion.current += 1;
             hasCachedTransmissionFrame.current = false;
         }
+        return true;
     }, [maxActiveWaves, orbits.length]);
 
     const handlePointerDown = useCallback(() => {
+        if (!isManualWaveTriggerUnlocked.current) return;
+        if (isLogoVisibleRef.current) return;
         triggerQueue.current = true;
     }, []);
 
@@ -586,6 +680,19 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
 
     useFrame((state, delta) => {
         const now = state.clock.getElapsedTime();
+        const currentPixelRatio = state.gl.getPixelRatio();
+        const targetOrbitLineScreenWidthPx = orbitLineBaseWidthPx * currentPixelRatio;
+
+        if (
+            !Number.isFinite(lastOrbitLineScreenWidthPxRef.current) ||
+            Math.abs(lastOrbitLineScreenWidthPxRef.current - targetOrbitLineScreenWidthPx) > 0.001
+        ) {
+            for (const orbitLine of orbitLineRefs.current) {
+                if (!orbitLine) continue;
+                orbitLine.material.linewidth = targetOrbitLineScreenWidthPx;
+            }
+            lastOrbitLineScreenWidthPxRef.current = targetOrbitLineScreenWidthPx;
+        }
 
         const sceneGroup = groupRef.current;
         if (sceneGroup) {
@@ -633,10 +740,11 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             }
 
             if (orbitLine) {
-                const currentCount = Math.floor(drawProgress * orbit.pointCount);
+                const maxSegmentCount = Math.max(1, orbit.pointCount - 1);
+                const currentCount = Math.floor(drawProgress * maxSegmentCount);
 
                 if (runtime.lastDrawCount !== currentCount) {
-                    orbitLine.geometry.setDrawRange(0, currentCount);
+                    orbitLine.geometry.instanceCount = currentCount;
                     runtime.lastDrawCount = currentCount;
                 }
 
@@ -748,6 +856,10 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             } else {
                 easing.damp(logoMaterialRef.current, 'opacity', 0, 0.5, delta);
             }
+
+            isLogoVisibleRef.current = logoMaterialRef.current.opacity > LOGO_VISIBILITY_EPSILON;
+        } else {
+            isLogoVisibleRef.current = false;
         }
 
         if (triggerQueue.current) {
@@ -756,8 +868,11 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         }
 
         if (now > INTRO_DURATION && !hasFiredIntroWave.current) {
-            hasFiredIntroWave.current = true;
-            triggerWaveAction(state);
+            const didTriggerIntroWave = triggerWaveAction(state);
+            if (didTriggerIntroWave) {
+                hasFiredIntroWave.current = true;
+                isManualWaveTriggerUnlocked.current = true;
+            }
         }
 
         const ambientIntensity = now > LIGHT_START ? 0.4 : 0;
@@ -813,7 +928,10 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                             config={waveConfig}
                             onComplete={handleWaveComplete}
                             renderConfig={waveRenderConfig}
-                            renderProfile={waveSlotRenderProfiles[wave.id] ?? getWaveSlotRenderProfile(1, 1)}
+                            renderProfile={
+                                waveSlotRenderProfiles[wave.id] ??
+                                getWaveSlotRenderProfile(1, 1, quality, perf.tier)
+                            }
                             sharedBuffer={sharedFbo.texture}
                             torusGeometry={waveTorusGeometry}
                         />
@@ -834,8 +952,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                             <primitive
                                 object={orbitLines[index]}
                                 ref={(line: unknown) => {
-                                    orbitLineRefs.current[index] =
-                                        line as unknown as Line<BufferGeometry, LineBasicMaterial> | null;
+                                    orbitLineRefs.current[index] = line as Line2 | null;
                                 }}
                             />
 

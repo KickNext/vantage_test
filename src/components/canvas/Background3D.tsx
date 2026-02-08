@@ -7,8 +7,8 @@ import {
     Noise,
     FXAA,
 } from '@react-three/postprocessing';
-import { PerformanceMonitor } from '@react-three/drei';
-import { Vector2 } from 'three';
+import { PerformanceMonitor, Preload } from '@react-three/drei';
+import { HalfFloatType, UnsignedByteType, Vector2 } from 'three';
 import { OrbitalWaves } from './OrbitalWaves';
 import { defaultConfig } from '../../config/defaults';
 import { usePerformanceTier } from '../../hooks/usePerformanceTier';
@@ -21,6 +21,7 @@ const QUALITY_RISE_COOLDOWN_MS = 3200;
 const DPR_DROP_COOLDOWN_MS = 800;
 const DPR_RISE_COOLDOWN_MS = 1500;
 const DPR_MIN_DELTA_TO_APPLY = 0.1;
+const STARTUP_QUALITY_RISE_DELAY_MS = 6000;
 
 function tierToMaxQuality(tier: PerformanceTier): RuntimeQuality {
     switch (tier) {
@@ -53,17 +54,25 @@ export const Background3D = () => {
     const minDpr = tierToMinDpr(perf.tier);
     const minQuality = tierToMinQuality(perf.tier);
     const maxQuality = tierToMaxQuality(perf.tier);
+    const initialQuality = tierToMidQuality(maxQuality);
 
     // Start with moderated DPR to keep the intro animation smooth, then scale up/down from runtime metrics.
     const [dpr, setDpr] = useState(() =>
         Math.min(perf.maxDpr, Math.max(perf.tier === 'high' ? 1.5 : 1, minDpr)),
     );
-    const [quality, setQuality] = useState<RuntimeQuality>(maxQuality);
+    const [quality, setQuality] = useState<RuntimeQuality>(initialQuality);
 
-    const qualityRef = useRef<RuntimeQuality>(maxQuality);
+    const qualityRef = useRef<RuntimeQuality>(initialQuality);
     const lastQualityChangeRef = useRef(Number.NEGATIVE_INFINITY);
     const lastDprChangeRef = useRef(Number.NEGATIVE_INFINITY);
     const resumeGraceUntilRef = useRef(0);
+    const allowQualityRiseAtRef = useRef(0);
+
+    useEffect(() => {
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        allowQualityRiseAtRef.current = now + STARTUP_QUALITY_RISE_DELAY_MS;
+        resumeGraceUntilRef.current = now + 800;
+    }, []);
 
     const handlePerformanceChange = useCallback(
         ({ factor }: { factor: number }) => {
@@ -96,6 +105,7 @@ export const Background3D = () => {
 
             const currentQuality = qualityRef.current;
             if (targetQuality === currentQuality) return;
+            if (targetQuality > currentQuality && now < allowQualityRiseAtRef.current) return;
 
             const cooldown =
                 targetQuality < currentQuality ? QUALITY_DROP_COOLDOWN_MS : QUALITY_RISE_COOLDOWN_MS;
@@ -118,6 +128,7 @@ export const Background3D = () => {
         lastDprChangeRef.current = now;
         qualityRef.current = minQuality;
         lastQualityChangeRef.current = now;
+        allowQualityRiseAtRef.current = now + STARTUP_QUALITY_RISE_DELAY_MS;
         setQuality(minQuality);
     }, [minDpr, minQuality, perf.maxDpr]);
 
@@ -126,14 +137,16 @@ export const Background3D = () => {
             if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
             const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
             const restoredDpr = Math.min(perf.maxDpr, Math.max(perf.tier === 'high' ? 1.5 : 1, minDpr));
+            const restoredQuality = tierToMidQuality(maxQuality);
 
             resumeGraceUntilRef.current = now + 1200;
             lastDprChangeRef.current = Number.NEGATIVE_INFINITY;
             lastQualityChangeRef.current = Number.NEGATIVE_INFINITY;
-            qualityRef.current = maxQuality;
+            qualityRef.current = restoredQuality;
+            allowQualityRiseAtRef.current = now + STARTUP_QUALITY_RISE_DELAY_MS;
 
             setDpr(restoredDpr);
-            setQuality(maxQuality);
+            setQuality(restoredQuality);
         };
 
         document.addEventListener('visibilitychange', restoreVisualState);
@@ -152,18 +165,38 @@ export const Background3D = () => {
             quality === 2 ? 1 : quality === 1 ? (perf.tier === 'high' ? 0.97 : 0.9) : 0.78;
         const keepHighTierLook = perf.tier === 'high' && quality >= 1;
         const highTierMsaa = perf.tier === 'high' && quality === 2;
+        const mobileSafeMode = perf.isMobile;
+        const mobileBloomEnabled = !mobileSafeMode || quality > 0;
+        const mobileBloomIntensityScale = mobileSafeMode ? 0.72 : 1;
+        const bloomLuminanceThreshold = mobileSafeMode
+            ? Math.max(0.1, defaultConfig.bloom.luminanceThreshold)
+            : defaultConfig.bloom.luminanceThreshold;
+        const bloomRadius = mobileSafeMode ? Math.min(0.22, defaultConfig.bloom.radius) : defaultConfig.bloom.radius;
+        const bloomMipmapBlur = mobileSafeMode ? false : defaultConfig.bloom.mipmapBlur;
 
         return {
             resolutionScale,
             multisampling: highTierMsaa ? 4 : 0,
-            bloomIntensity: defaultConfig.bloom.intensity * bloomIntensityMultiplier,
-            enableBloom: perf.enableBloom,
+            bloomIntensity: defaultConfig.bloom.intensity * bloomIntensityMultiplier * mobileBloomIntensityScale,
+            bloomLuminanceThreshold,
+            bloomRadius,
+            bloomMipmapBlur,
+            frameBufferType: mobileSafeMode ? UnsignedByteType : HalfFloatType,
+            enableBloom: perf.enableBloom && mobileBloomEnabled,
             enableChromaticAberration:
                 perf.enableChromaticAberration && (quality === 2 || keepHighTierLook),
             enableNoise: perf.enableNoise && (quality === 2 || keepHighTierLook),
             antialiasMode: perf.antialias ? (highTierMsaa ? 'none' : 'fxaa') : 'none',
         };
-    }, [quality, perf.antialias, perf.enableBloom, perf.enableChromaticAberration, perf.enableNoise, perf.tier]);
+    }, [
+        perf.antialias,
+        perf.enableBloom,
+        perf.enableChromaticAberration,
+        perf.enableNoise,
+        perf.isMobile,
+        perf.tier,
+        quality,
+    ]);
 
     const caOffsetVec = useMemo(
         () =>
@@ -192,6 +225,8 @@ export const Background3D = () => {
         [],
     );
 
+    const showVignette = perf.enableVignette;
+
     const hasPostFx =
         postFx.enableBloom ||
         postFx.enableChromaticAberration ||
@@ -205,10 +240,10 @@ export const Background3D = () => {
             effects.push(
                 <Bloom
                     key="bloom"
-                    luminanceThreshold={defaultConfig.bloom.luminanceThreshold}
-                    mipmapBlur={defaultConfig.bloom.mipmapBlur}
+                    luminanceThreshold={postFx.bloomLuminanceThreshold}
+                    mipmapBlur={postFx.bloomMipmapBlur}
                     intensity={postFx.bloomIntensity}
-                    radius={defaultConfig.bloom.radius}
+                    radius={postFx.bloomRadius}
                 />,
             );
         }
@@ -234,13 +269,16 @@ export const Background3D = () => {
 
         return <>{effects}</>;
     }, [
-        caOffsetVec,
-        postFx.antialiasMode,
-        postFx.bloomIntensity,
-        postFx.enableBloom,
-        postFx.enableChromaticAberration,
-        postFx.enableNoise,
-    ]);
+            caOffsetVec,
+            postFx.antialiasMode,
+            postFx.bloomIntensity,
+            postFx.bloomLuminanceThreshold,
+            postFx.bloomMipmapBlur,
+            postFx.bloomRadius,
+            postFx.enableBloom,
+            postFx.enableChromaticAberration,
+            postFx.enableNoise,
+        ]);
 
     return (
         <div
@@ -254,7 +292,7 @@ export const Background3D = () => {
                 background: defaultConfig.colors.background,
             }}
         >
-            <div style={vignetteStyle} />
+            {showVignette && <div style={vignetteStyle} />}
 
             <Canvas
                 camera={{ position: [0, 0, 26], fov: 45 }}
@@ -289,12 +327,14 @@ export const Background3D = () => {
                         perf={perf}
                         quality={quality}
                     />
+                    <Preload all />
 
                     {hasPostFx && (
                         <EffectComposer
                             enableNormalPass={false}
                             multisampling={postFx.multisampling}
                             resolutionScale={postFx.resolutionScale}
+                            frameBufferType={postFx.frameBufferType}
                             stencilBuffer={false}
                         >
                             {composerEffects}
