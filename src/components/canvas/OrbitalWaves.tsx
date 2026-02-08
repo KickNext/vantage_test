@@ -25,7 +25,7 @@ import { Line2 } from 'three/examples/jsm/lines/Line2.js';
 import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { defaultConfig } from '../../config/defaults';
-import type { PerformanceConfig, PerformanceTier } from '../../hooks/usePerformanceTier';
+import type { PerformanceConfig } from '../../config/performance';
 
 interface OrbitData {
     geometry: BufferGeometry;
@@ -121,24 +121,18 @@ function deactivateWaveMutable(wave: WaveData): void {
     wave.active = false;
 }
 
-function getOrbitLineBaseWidthPx(quality: 0 | 1 | 2, tier: PerformanceTier): number {
-    if (quality === 2 && tier === 'high') return 1.75;
-    if (quality === 2) return 1.6;
+function getOrbitLineBaseWidthPx(quality: 0 | 1 | 2): number {
+    if (quality === 2) return 1.75;
     if (quality === 1) return 1.5;
     return 1.35;
 }
 
-function getOrbitSegments(
-    baseSegments: number,
-    quality: 0 | 1 | 2,
-    tier: PerformanceTier,
-    isMobile: boolean,
-): number {
+function getOrbitSegments(baseSegments: number, quality: 0 | 1 | 2): number {
     const qualityFactor = quality === 2 ? 1.45 : quality === 1 ? 1.3 : 1.15;
     const retinaFactor = typeof window !== 'undefined' && (window.devicePixelRatio || 1) >= 1.5 ? 1.2 : 1;
-    const tierFactor = tier === 'high' ? 1.1 : 1;
-    const targetSegments = Math.floor(baseSegments * qualityFactor * retinaFactor * tierFactor);
-    const maxSegments = isMobile ? 128 : 256;
+    const segmentBoostFactor = 1.1;
+    const targetSegments = Math.floor(baseSegments * qualityFactor * retinaFactor * segmentBoostFactor);
+    const maxSegments = 256;
     return Math.min(maxSegments, Math.max(baseSegments, targetSegments));
 }
 
@@ -146,7 +140,6 @@ function getWaveSlotRenderProfile(
     slotIndex: number,
     baseSamples: number,
     quality: 0 | 1 | 2,
-    tier: PerformanceTier,
 ): WaveSlotRenderProfile {
     if (slotIndex <= 0) {
         return {
@@ -159,9 +152,7 @@ function getWaveSlotRenderProfile(
 
     if (slotIndex === 1) {
         const slotOneSamples =
-            quality === 2 && tier === 'high'
-                ? Math.max(2, Math.floor(baseSamples * 0.55))
-                : Math.max(1, Math.floor(baseSamples * 0.5));
+            quality === 2 ? Math.max(2, Math.floor(baseSamples * 0.55)) : Math.max(1, Math.floor(baseSamples * 0.5));
 
         return {
             samples: slotOneSamples,
@@ -407,11 +398,9 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
 
     const orbitSphereSegments = useMemo<[number, number]>(() => {
         if (quality === 0) return [8, 8];
-        if (quality === 1) return perf.tier === 'high' ? [12, 12] : [10, 10];
-        if (perf.tier === 'low') return [10, 10];
-        if (perf.tier === 'medium') return [12, 12];
+        if (quality === 1) return [12, 12];
         return [16, 16];
-    }, [perf.tier, quality]);
+    }, [quality]);
 
     const coreSphereSegments = useMemo<[number, number]>(() => {
         if (quality === 2) return [20, 20];
@@ -420,7 +409,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     }, [quality]);
 
     const [orbits] = useState<OrbitData[]>(() => {
-        const segments = getOrbitSegments(perf.orbitSegments, quality, perf.tier, perf.isMobile);
+        const segments = getOrbitSegments(perf.orbitSegments, quality);
 
         return Array.from({ length: 10 }).map((_, i) => {
             const radius = 3 + i * 1.5;
@@ -456,8 +445,8 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     );
 
     const orbitLineBaseWidthPx = useMemo(
-        () => getOrbitLineBaseWidthPx(quality, perf.tier),
-        [perf.tier, quality],
+        () => getOrbitLineBaseWidthPx(quality),
+        [quality],
     );
 
     const orbitLines = useMemo(
@@ -478,7 +467,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                     worldUnits: false,
                     toneMapped: false,
                     depthTest: true,
-                    depthWrite: true,
+                    depthWrite: false,
                     side: DoubleSide,
                 });
 
@@ -550,9 +539,9 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const waveSlotRenderProfiles = useMemo(
         () =>
             Array.from({ length: wavePool.length }, (_, slotIndex) =>
-                getWaveSlotRenderProfile(slotIndex, waveRenderConfig.transmissionSamples, quality, perf.tier),
+                getWaveSlotRenderProfile(slotIndex, waveRenderConfig.transmissionSamples, quality),
             ),
-        [perf.tier, quality, wavePool.length, waveRenderConfig.transmissionSamples],
+        [quality, wavePool.length, waveRenderConfig.transmissionSamples],
     );
 
     const wavesRef = useRef<WaveData[]>(wavePool);
@@ -733,7 +722,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                 isDrawing = true;
             } else {
                 drawProgress = 1;
-                opacity = 0.6;
+                opacity = 1;
             }
 
             if (orbitGroup) {
@@ -931,7 +920,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                             renderConfig={waveRenderConfig}
                             renderProfile={
                                 waveSlotRenderProfiles[wave.id] ??
-                                getWaveSlotRenderProfile(1, 1, quality, perf.tier)
+                                getWaveSlotRenderProfile(1, 1, quality)
                             }
                             sharedBuffer={sharedFbo.texture}
                             torusGeometry={waveTorusGeometry}
