@@ -8,7 +8,7 @@ import {
     FXAA,
 } from '@react-three/postprocessing';
 import { PerformanceMonitor, Preload } from '@react-three/drei';
-import { HalfFloatType, UnsignedByteType, Vector2 } from 'three';
+import { HalfFloatType, Vector2 } from 'three';
 import { OrbitalWaves } from './OrbitalWaves';
 import { defaultConfig } from '../../config/defaults';
 import { usePerformanceTier } from '../../hooks/usePerformanceTier';
@@ -167,21 +167,23 @@ export const Background3D = () => {
         const highTierMsaa = perf.tier === 'high' && quality === 2;
         const mobileSafeMode = perf.isMobile;
         const mobileBloomEnabled = !mobileSafeMode || quality > 0;
-        const mobileBloomIntensityScale = mobileSafeMode ? 0.72 : 1;
+        const mobileBloomIntensityScale = mobileSafeMode ? 0.58 : 1;
         const bloomLuminanceThreshold = mobileSafeMode
-            ? Math.max(0.1, defaultConfig.bloom.luminanceThreshold)
+            ? Math.max(0.2, defaultConfig.bloom.luminanceThreshold)
             : defaultConfig.bloom.luminanceThreshold;
-        const bloomRadius = mobileSafeMode ? Math.min(0.22, defaultConfig.bloom.radius) : defaultConfig.bloom.radius;
-        const bloomMipmapBlur = mobileSafeMode ? false : defaultConfig.bloom.mipmapBlur;
+        const bloomLuminanceSmoothing = mobileSafeMode ? 0.24 : 0.03;
+        const bloomRadius = mobileSafeMode ? Math.min(0.2, defaultConfig.bloom.radius) : defaultConfig.bloom.radius;
+        const bloomMipmapBlur = mobileSafeMode ? true : defaultConfig.bloom.mipmapBlur;
 
         return {
             resolutionScale,
             multisampling: highTierMsaa ? 4 : 0,
             bloomIntensity: defaultConfig.bloom.intensity * bloomIntensityMultiplier * mobileBloomIntensityScale,
             bloomLuminanceThreshold,
+            bloomLuminanceSmoothing,
             bloomRadius,
             bloomMipmapBlur,
-            frameBufferType: mobileSafeMode ? UnsignedByteType : HalfFloatType,
+            frameBufferType: HalfFloatType,
             enableBloom: perf.enableBloom && mobileBloomEnabled,
             enableChromaticAberration:
                 perf.enableChromaticAberration && (quality === 2 || keepHighTierLook),
@@ -241,6 +243,7 @@ export const Background3D = () => {
                 <Bloom
                     key="bloom"
                     luminanceThreshold={postFx.bloomLuminanceThreshold}
+                    luminanceSmoothing={postFx.bloomLuminanceSmoothing}
                     mipmapBlur={postFx.bloomMipmapBlur}
                     intensity={postFx.bloomIntensity}
                     radius={postFx.bloomRadius}
@@ -273,6 +276,7 @@ export const Background3D = () => {
             postFx.antialiasMode,
             postFx.bloomIntensity,
             postFx.bloomLuminanceThreshold,
+            postFx.bloomLuminanceSmoothing,
             postFx.bloomMipmapBlur,
             postFx.bloomRadius,
             postFx.enableBloom,
