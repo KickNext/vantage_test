@@ -48,6 +48,7 @@ interface WaveProps {
     config: typeof defaultConfig.wave;
     onComplete: (id: number) => void;
     renderConfig: WaveRenderConfig;
+    transmissionSamples: number;
     sharedBuffer: Texture;
     torusGeometry: TorusGeometry;
 }
@@ -85,6 +86,8 @@ const INTRO_DELAY = 0.5;
 const DRAW_DURATION = 1.5;
 const INTRO_DURATION = 6.0;
 const LIGHT_START = 3.5;
+const SECONDARY_WAVE_SAMPLES_RATIO = 0.55;
+const TERTIARY_WAVE_SAMPLES_RATIO = 0.34;
 
 const easeInOutSine = (x: number): number => {
     return -(Math.cos(Math.PI * x) - 1) / 2;
@@ -110,12 +113,19 @@ function deactivateWaveMutable(wave: WaveData): void {
     wave.active = false;
 }
 
+function getWaveSlotSamples(slotIndex: number, baseSamples: number): number {
+    if (slotIndex <= 0) return baseSamples;
+    if (slotIndex === 1) return Math.max(1, Math.round(baseSamples * SECONDARY_WAVE_SAMPLES_RATIO));
+    return Math.max(1, Math.round(baseSamples * TERTIARY_WAVE_SAMPLES_RATIO));
+}
+
 const ImpulseWave = memo(function ImpulseWave({
     orbits,
     data,
     config,
     onComplete,
     renderConfig,
+    transmissionSamples,
     sharedBuffer,
     torusGeometry,
 }: WaveProps) {
@@ -207,7 +217,7 @@ const ImpulseWave = memo(function ImpulseWave({
                     <MeshTransmissionMaterial
                         buffer={sharedBuffer}
                         resolution={renderConfig.transmissionResolution}
-                        samples={renderConfig.transmissionSamples}
+                        samples={transmissionSamples}
                         thickness={0}
                         roughness={waveRoughness}
                         anisotropy={waveAnisotropy}
@@ -429,6 +439,14 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             startTime: 0,
             orbitIndex: 0,
         })),
+    );
+
+    const waveSlotTransmissionSamples = useMemo(
+        () =>
+            Array.from({ length: wavePool.length }, (_, slotIndex) =>
+                getWaveSlotSamples(slotIndex, waveRenderConfig.transmissionSamples),
+            ),
+        [wavePool.length, waveRenderConfig.transmissionSamples],
     );
 
     const wavesRef = useRef<WaveData[]>(wavePool);
@@ -781,6 +799,9 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                             config={waveConfig}
                             onComplete={handleWaveComplete}
                             renderConfig={waveRenderConfig}
+                            transmissionSamples={
+                                waveSlotTransmissionSamples[wave.id] ?? waveRenderConfig.transmissionSamples
+                            }
                             sharedBuffer={sharedFbo.texture}
                             torusGeometry={waveTorusGeometry}
                         />
