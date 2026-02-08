@@ -228,19 +228,15 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const orbitLineRefs = useRef<Array<Line<BufferGeometry, LineBasicMaterial> | null>>([]);
     const orbitAnchorRefs = useRef<Array<Group | null>>([]);
 
-    const fboFrameCounter = useRef(0);
+    const hasCachedTransmissionFrame = useRef(false);
     const lastOrbitIndices = useRef<number[]>([]);
     const lastActiveWaveId = useRef<number>(-1);
     const hasFiredIntroWave = useRef(false);
     const triggerQueue = useRef(false);
     const cachedColor = useRef(new Color());
     const targetRotation = useRef<[number, number, number]>([0, 0, 0]);
-
-    const fboRenderInterval = useMemo(() => {
-        if (quality === 2) return perf.tier === 'high' ? 1 : 2;
-        if (quality === 1) return perf.tier === 'high' ? 2 : 3;
-        return 4;
-    }, [perf.tier, quality]);
+    const transmissionCacheVersion = useRef(0);
+    const capturedTransmissionCacheVersion = useRef(-1);
 
     const waveRenderConfig = useMemo<WaveRenderConfig>(() => {
         const [baseRadial, baseTubular] = perf.torusSegments;
@@ -276,6 +272,11 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         waveRenderConfig.transmissionResolution,
         waveRenderConfig.transmissionResolution,
     );
+
+    useEffect(() => {
+        transmissionCacheVersion.current += 1;
+        hasCachedTransmissionFrame.current = false;
+    }, [quality, waveRenderConfig.transmissionResolution, waveRenderConfig.transmissionSamples]);
 
     const logoTexture = useLoader(TextureLoader, import.meta.env.BASE_URL + 'logo_vantage.svg');
 
@@ -435,6 +436,8 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         nextWave.active = true;
         nextWave.startTime = now;
         nextWave.orbitIndex = nextOrbitIndex;
+        transmissionCacheVersion.current += 1;
+        hasCachedTransmissionFrame.current = false;
         lastActiveWaveId.current = nextWave.id;
     }, [maxActiveWaves, orbits.length]);
 
@@ -446,6 +449,18 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         window.addEventListener('pointerdown', handlePointerDown);
         return () => window.removeEventListener('pointerdown', handlePointerDown);
     }, [handlePointerDown]);
+
+    useEffect(() => {
+        const handleVisibilityChange = () => {
+            if (document.visibilityState !== 'visible') return;
+            transmissionCacheVersion.current += 1;
+            hasCachedTransmissionFrame.current = false;
+            if (wavesGroupRef.current) wavesGroupRef.current.visible = true;
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }, []);
 
     useFrame((state, delta) => {
         const now = state.clock.getElapsedTime();
@@ -459,7 +474,6 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             nextRotation[1] = x;
             nextRotation[2] = 0;
             easing.dampE(sceneGroup.rotation, nextRotation, 1.5, delta);
-            sceneGroup.updateMatrixWorld(true);
         }
 
         const sphereMesh = orbitSphereMeshRef.current;
@@ -524,7 +538,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                     runtime.lastScale = targetScale;
                 }
 
-                orbitGroup.updateMatrixWorld(true);
+                orbitAnchor.updateWorldMatrix(true, false);
                 sphereMesh.setMatrixAt(i, orbitAnchor.matrixWorld);
                 hasSphereMatrixUpdates = true;
             }
@@ -537,23 +551,33 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         const hasActiveWaves = wavesRef.current.some((wave) => wave.active);
 
         if (hasActiveWaves && wavesGroupRef.current) {
-            fboFrameCounter.current++;
-            if (fboFrameCounter.current >= fboRenderInterval) {
-                fboFrameCounter.current = 0;
+            const cacheVersionChanged =
+                capturedTransmissionCacheVersion.current !== transmissionCacheVersion.current;
 
-                const oldToneMapping = state.gl.toneMapping;
-                state.gl.toneMapping = NoToneMapping;
+            // Cache scene refraction source once per cache version and reuse it across active waves.
+            if (!hasCachedTransmissionFrame.current || cacheVersionChanged) {
+                const gl = state.gl;
+                if (!gl.getContext().isContextLost()) {
+                    const oldToneMapping = gl.toneMapping;
+                    const oldRenderTarget = gl.getRenderTarget();
+                    const wavesGroup = wavesGroupRef.current;
+                    wavesGroup.visible = false;
 
-                wavesGroupRef.current.visible = false;
-                state.gl.setRenderTarget(sharedFbo);
-                state.gl.render(state.scene, state.camera);
-                state.gl.setRenderTarget(null);
-                wavesGroupRef.current.visible = true;
-
-                state.gl.toneMapping = oldToneMapping;
+                    try {
+                        gl.toneMapping = NoToneMapping;
+                        gl.setRenderTarget(sharedFbo);
+                        gl.render(state.scene, state.camera);
+                        hasCachedTransmissionFrame.current = true;
+                        capturedTransmissionCacheVersion.current = transmissionCacheVersion.current;
+                    } finally {
+                        gl.setRenderTarget(oldRenderTarget);
+                        gl.toneMapping = oldToneMapping;
+                        wavesGroup.visible = true;
+                    }
+                }
             }
         } else {
-            fboFrameCounter.current = 0;
+            hasCachedTransmissionFrame.current = false;
         }
 
         if (lastActiveWaveId.current !== -1 && logoMaterialRef.current) {

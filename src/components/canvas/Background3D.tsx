@@ -1,6 +1,13 @@
-import { Suspense, useCallback, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { EffectComposer, Bloom, ChromaticAberration, Noise } from '@react-three/postprocessing';
+import {
+    EffectComposer,
+    Bloom,
+    ChromaticAberration,
+    Noise,
+    FXAA,
+    SMAA,
+} from '@react-three/postprocessing';
 import { PerformanceMonitor } from '@react-three/drei';
 import { Vector2 } from 'three';
 import { OrbitalWaves } from './OrbitalWaves';
@@ -12,6 +19,9 @@ type RuntimeQuality = 0 | 1 | 2;
 
 const QUALITY_DROP_COOLDOWN_MS = 900;
 const QUALITY_RISE_COOLDOWN_MS = 3200;
+const DPR_DROP_COOLDOWN_MS = 800;
+const DPR_RISE_COOLDOWN_MS = 1500;
+const DPR_MIN_DELTA_TO_APPLY = 0.1;
 
 function tierToMaxQuality(tier: PerformanceTier): RuntimeQuality {
     switch (tier) {
@@ -25,46 +35,69 @@ function tierToMaxQuality(tier: PerformanceTier): RuntimeQuality {
 }
 
 function tierToMinDpr(tier: PerformanceTier): number {
-    if (tier === 'high') return 1;
-    if (tier === 'medium') return 0.75;
-    return 0.5;
+    if (tier === 'high') return 1.5;
+    if (tier === 'medium') return 1;
+    return 0.75;
 }
 
 function tierToMidQuality(maxQuality: RuntimeQuality): RuntimeQuality {
     return maxQuality === 2 ? 1 : maxQuality;
 }
 
+function tierToMinQuality(tier: PerformanceTier): RuntimeQuality {
+    return tier === 'low' ? 0 : 1;
+}
+
 export const Background3D = () => {
     const perf = usePerformanceTier();
 
     const minDpr = tierToMinDpr(perf.tier);
+    const minQuality = tierToMinQuality(perf.tier);
     const maxQuality = tierToMaxQuality(perf.tier);
 
     // Start with moderated DPR to keep the intro animation smooth, then scale up/down from runtime metrics.
-    const [dpr, setDpr] = useState(() => Math.min(perf.maxDpr, Math.max(1, minDpr)));
+    const [dpr, setDpr] = useState(() =>
+        Math.min(perf.maxDpr, Math.max(perf.tier === 'high' ? 1.5 : 1, minDpr)),
+    );
     const [quality, setQuality] = useState<RuntimeQuality>(maxQuality);
 
     const qualityRef = useRef<RuntimeQuality>(maxQuality);
-    const lastQualityChangeRef = useRef(0);
+    const lastQualityChangeRef = useRef(Number.NEGATIVE_INFINITY);
+    const lastDprChangeRef = useRef(Number.NEGATIVE_INFINITY);
+    const resumeGraceUntilRef = useRef(0);
 
     const handlePerformanceChange = useCallback(
         ({ factor }: { factor: number }) => {
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+            if (now < resumeGraceUntilRef.current) return;
+
             const nextDpr = Math.round((minDpr + (perf.maxDpr - minDpr) * factor) * 4) / 4;
             const clampedDpr = Math.max(minDpr, Math.min(perf.maxDpr, nextDpr));
 
-            setDpr((prev) => (Math.abs(prev - clampedDpr) < 0.01 ? prev : clampedDpr));
+            setDpr((prev) => {
+                const delta = clampedDpr - prev;
+                if (Math.abs(delta) < DPR_MIN_DELTA_TO_APPLY) return prev;
 
+                const cooldown = delta < 0 ? DPR_DROP_COOLDOWN_MS : DPR_RISE_COOLDOWN_MS;
+                if (now - lastDprChangeRef.current < cooldown) return prev;
+
+                lastDprChangeRef.current = now;
+                return clampedDpr;
+            });
+
+            const highQualityThreshold = maxQuality === 2 ? 0.72 : 0.8;
+            const midQualityThreshold = maxQuality === 2 ? 0.5 : 0.58;
             const targetQuality =
-                factor >= 0.8
+                factor >= highQualityThreshold
                     ? maxQuality
-                    : factor >= 0.58
+                    : factor >= midQualityThreshold
                       ? tierToMidQuality(maxQuality)
-                      : 0;
+                      : minQuality;
 
             const currentQuality = qualityRef.current;
             if (targetQuality === currentQuality) return;
 
-            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
             const cooldown =
                 targetQuality < currentQuality ? QUALITY_DROP_COOLDOWN_MS : QUALITY_RISE_COOLDOWN_MS;
 
@@ -74,31 +107,67 @@ export const Background3D = () => {
             lastQualityChangeRef.current = now;
             setQuality(targetQuality);
         },
-        [maxQuality, minDpr, perf.maxDpr],
+        [maxQuality, minDpr, minQuality, perf.maxDpr],
     );
 
     const handleFallback = useCallback(() => {
         const fallbackDpr = Math.max(minDpr, perf.maxDpr * 0.7);
+        const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
         setDpr((prev) => (Math.abs(prev - fallbackDpr) < 0.01 ? prev : fallbackDpr));
 
-        qualityRef.current = 0;
-        lastQualityChangeRef.current = typeof performance !== 'undefined' ? performance.now() : Date.now();
-        setQuality(0);
-    }, [minDpr, perf.maxDpr]);
+        lastDprChangeRef.current = now;
+        qualityRef.current = minQuality;
+        lastQualityChangeRef.current = now;
+        setQuality(minQuality);
+    }, [minDpr, minQuality, perf.maxDpr]);
+
+    useEffect(() => {
+        const restoreVisualState = () => {
+            if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+            const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+            const restoredDpr = Math.min(perf.maxDpr, Math.max(perf.tier === 'high' ? 1.5 : 1, minDpr));
+
+            resumeGraceUntilRef.current = now + 1200;
+            lastDprChangeRef.current = Number.NEGATIVE_INFINITY;
+            lastQualityChangeRef.current = Number.NEGATIVE_INFINITY;
+            qualityRef.current = maxQuality;
+
+            setDpr(restoredDpr);
+            setQuality(maxQuality);
+        };
+
+        document.addEventListener('visibilitychange', restoreVisualState);
+        window.addEventListener('focus', restoreVisualState);
+
+        return () => {
+            document.removeEventListener('visibilitychange', restoreVisualState);
+            window.removeEventListener('focus', restoreVisualState);
+        };
+    }, [maxQuality, minDpr, perf.maxDpr, perf.tier]);
 
     const postFx = useMemo(() => {
-        const resolutionScale = quality === 2 ? 1 : quality === 1 ? 0.86 : 0.72;
-        const bloomIntensityMultiplier = quality === 2 ? 1 : quality === 1 ? 0.9 : 0.78;
+        const resolutionScale =
+            quality === 2 ? 1 : quality === 1 ? (perf.tier === 'high' ? 1 : 0.9) : 0.8;
+        const bloomIntensityMultiplier =
+            quality === 2 ? 1 : quality === 1 ? (perf.tier === 'high' ? 0.97 : 0.9) : 0.78;
+        const keepHighTierLook = perf.tier === 'high' && quality >= 1;
 
         return {
             resolutionScale,
-            multisampling: quality === 2 && perf.tier === 'high' ? 2 : 0,
+            multisampling: perf.tier === 'high' && quality === 2 ? 2 : 0,
             bloomIntensity: defaultConfig.bloom.intensity * bloomIntensityMultiplier,
-            enableChromaticAberration: quality === 2 && perf.enableChromaticAberration,
-            enableNoise: quality === 2 && perf.enableNoise,
+            enableBloom: perf.enableBloom,
+            enableChromaticAberration:
+                perf.enableChromaticAberration && (quality === 2 || keepHighTierLook),
+            enableNoise: perf.enableNoise && (quality === 2 || keepHighTierLook),
+            antialiasMode: perf.antialias
+                ? perf.tier === 'high' && quality === 2
+                    ? 'smaa'
+                    : 'fxaa'
+                : 'none',
         };
-    }, [quality, perf.enableChromaticAberration, perf.enableNoise, perf.tier]);
+    }, [quality, perf.antialias, perf.enableBloom, perf.enableChromaticAberration, perf.enableNoise, perf.tier]);
 
     const caOffsetVec = useMemo(
         () =>
@@ -127,56 +196,57 @@ export const Background3D = () => {
         [],
     );
 
-    const hasPostFx = perf.enableBloom;
+    const hasPostFx =
+        postFx.enableBloom ||
+        postFx.enableChromaticAberration ||
+        postFx.enableNoise ||
+        postFx.antialiasMode !== 'none';
 
     const composerEffects = useMemo(() => {
-        const bloom = (
-            <Bloom
-                luminanceThreshold={defaultConfig.bloom.luminanceThreshold}
-                mipmapBlur={defaultConfig.bloom.mipmapBlur}
-                intensity={postFx.bloomIntensity}
-                radius={defaultConfig.bloom.radius}
-            />
-        );
+        const effects: ReactElement[] = [];
 
-        if (postFx.enableChromaticAberration && postFx.enableNoise) {
-            return (
-                <>
-                    {bloom}
-                    <ChromaticAberration
-                        offset={caOffsetVec}
-                        radialModulation={defaultConfig.chromaticAberration.radialModulation}
-                        modulationOffset={defaultConfig.chromaticAberration.modulationOffset}
-                    />
-                    <Noise opacity={defaultConfig.noise.opacity} />
-                </>
+        if (postFx.enableBloom) {
+            effects.push(
+                <Bloom
+                    key="bloom"
+                    luminanceThreshold={defaultConfig.bloom.luminanceThreshold}
+                    mipmapBlur={defaultConfig.bloom.mipmapBlur}
+                    intensity={postFx.bloomIntensity}
+                    radius={defaultConfig.bloom.radius}
+                />,
             );
         }
 
         if (postFx.enableChromaticAberration) {
-            return (
-                <>
-                    {bloom}
-                    <ChromaticAberration
-                        offset={caOffsetVec}
-                        radialModulation={defaultConfig.chromaticAberration.radialModulation}
-                        modulationOffset={defaultConfig.chromaticAberration.modulationOffset}
-                    />
-                </>
+            effects.push(
+                <ChromaticAberration
+                    key="chromatic-aberration"
+                    offset={caOffsetVec}
+                    radialModulation={defaultConfig.chromaticAberration.radialModulation}
+                    modulationOffset={defaultConfig.chromaticAberration.modulationOffset}
+                />,
             );
         }
 
         if (postFx.enableNoise) {
-            return (
-                <>
-                    {bloom}
-                    <Noise opacity={defaultConfig.noise.opacity} />
-                </>
-            );
+            effects.push(<Noise key="noise" opacity={defaultConfig.noise.opacity} />);
         }
 
-        return bloom;
-    }, [caOffsetVec, postFx.bloomIntensity, postFx.enableChromaticAberration, postFx.enableNoise]);
+        if (postFx.antialiasMode === 'smaa') {
+            effects.push(<SMAA key="smaa" />);
+        } else if (postFx.antialiasMode === 'fxaa') {
+            effects.push(<FXAA key="fxaa" />);
+        }
+
+        return <>{effects}</>;
+    }, [
+        caOffsetVec,
+        postFx.antialiasMode,
+        postFx.bloomIntensity,
+        postFx.enableBloom,
+        postFx.enableChromaticAberration,
+        postFx.enableNoise,
+    ]);
 
     return (
         <div
@@ -195,7 +265,7 @@ export const Background3D = () => {
             <Canvas
                 camera={{ position: [0, 0, 26], fov: 45 }}
                 gl={{
-                    antialias: perf.antialias && quality > 0,
+                    antialias: perf.antialias && perf.tier === 'high',
                     alpha: false,
                     preserveDrawingBuffer: false,
                     powerPreference: 'high-performance',
@@ -231,6 +301,7 @@ export const Background3D = () => {
                             enableNormalPass={false}
                             multisampling={postFx.multisampling}
                             resolutionScale={postFx.resolutionScale}
+                            stencilBuffer={false}
                         >
                             {composerEffects}
                         </EffectComposer>

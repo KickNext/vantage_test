@@ -25,7 +25,7 @@ export interface PerformanceConfig {
     /** Максимальный DPR (device pixel ratio) */
     readonly maxDpr: number;
 
-    /** Включить ли MSAA */
+    /** Включить ли сглаживание */
     readonly antialias: boolean;
 
     // --- Геометрия ---
@@ -154,7 +154,8 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
             return {
                 tier,
                 maxDpr: 1.5,
-                antialias: false,
+                // На medium сглаживание выполняется FXAA-проходом (без тяжелого MSAA).
+                antialias: true,
 
                 torusSegments: [24, 48],
                 sphereSegments: [24, 24],
@@ -176,14 +177,14 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
             return {
                 tier,
                 maxDpr: 1,
-                antialias: false,
+                // На low оставляем только дешёвое сглаживание FXAA.
+                antialias: true,
 
                 torusSegments: [16, 32],
                 sphereSegments: [16, 16],
                 orbitSegments: 48,
 
-                // На low-тире Bloom тоже отключён —
-                // ноль пост-процессинг-проходов.
+                // На low-тире тяжелые пост-эффекты отключены.
                 enableBloom: false,
                 enableChromaticAberration: false,
                 enableNoise: false,
