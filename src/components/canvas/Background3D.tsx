@@ -3,12 +3,12 @@ import { Canvas } from '@react-three/fiber';
 import {
     EffectComposer,
     Bloom,
-    ChromaticAberration,
     Noise,
     FXAA,
+    SMAA,
 } from '@react-three/postprocessing';
 import { PerformanceMonitor, Preload } from '@react-three/drei';
-import { HalfFloatType, Vector2 } from 'three';
+import { HalfFloatType } from 'three';
 import { OrbitalWaves } from './OrbitalWaves';
 import { defaultConfig } from '../../config/defaults';
 import { usePerformanceTier } from '../../hooks/usePerformanceTier';
@@ -163,7 +163,7 @@ export const Background3D = () => {
             quality === 2 ? 1 : quality === 1 ? (perf.tier === 'high' ? 1 : 0.9) : 0.8;
         const bloomIntensityMultiplier =
             quality === 2 ? 1 : quality === 1 ? (perf.tier === 'high' ? 0.97 : 0.9) : 0.78;
-        const keepHighTierLook = perf.tier === 'high' && quality >= 1;
+        const keepHighTierNoise = perf.tier === 'high' && quality >= 1;
         const highTierMsaa = perf.tier === 'high' && quality === 2;
         const mobileSafeMode = perf.isMobile;
         const mobileBloomEnabled = !mobileSafeMode || quality > 0;
@@ -174,6 +174,18 @@ export const Background3D = () => {
         const bloomLuminanceSmoothing = mobileSafeMode ? 0.24 : 0.03;
         const bloomRadius = mobileSafeMode ? Math.min(0.2, defaultConfig.bloom.radius) : defaultConfig.bloom.radius;
         const bloomMipmapBlur = mobileSafeMode ? true : defaultConfig.bloom.mipmapBlur;
+        const bloomLevels =
+            quality === 2
+                ? mobileSafeMode
+                    ? 6
+                    : 8
+                : quality === 1
+                  ? mobileSafeMode
+                      ? 5
+                      : 6
+                  : mobileSafeMode
+                    ? 4
+                    : 5;
 
         return {
             resolutionScale,
@@ -183,31 +195,26 @@ export const Background3D = () => {
             bloomLuminanceSmoothing,
             bloomRadius,
             bloomMipmapBlur,
+            bloomLevels,
             frameBufferType: HalfFloatType,
             enableBloom: perf.enableBloom && mobileBloomEnabled,
-            enableChromaticAberration:
-                perf.enableChromaticAberration && (quality === 2 || keepHighTierLook),
-            enableNoise: perf.enableNoise && (quality === 2 || keepHighTierLook),
-            antialiasMode: perf.antialias ? (highTierMsaa ? 'none' : 'fxaa') : 'none',
+            enableNoise: perf.enableNoise && (quality === 2 || keepHighTierNoise),
+            antialiasMode: perf.antialias
+                ? highTierMsaa
+                    ? 'none'
+                    : quality >= 1 || !perf.isMobile
+                      ? 'smaa'
+                      : 'fxaa'
+                : 'none',
         };
     }, [
         perf.antialias,
         perf.enableBloom,
-        perf.enableChromaticAberration,
         perf.enableNoise,
         perf.isMobile,
         perf.tier,
         quality,
     ]);
-
-    const caOffsetVec = useMemo(
-        () =>
-            new Vector2(
-                defaultConfig.chromaticAberration.offset,
-                defaultConfig.chromaticAberration.offset,
-            ),
-        [],
-    );
 
     const vignetteStyle = useMemo(
         () => ({
@@ -231,7 +238,6 @@ export const Background3D = () => {
 
     const hasPostFx =
         postFx.enableBloom ||
-        postFx.enableChromaticAberration ||
         postFx.enableNoise ||
         postFx.antialiasMode !== 'none';
 
@@ -245,19 +251,9 @@ export const Background3D = () => {
                     luminanceThreshold={postFx.bloomLuminanceThreshold}
                     luminanceSmoothing={postFx.bloomLuminanceSmoothing}
                     mipmapBlur={postFx.bloomMipmapBlur}
+                    levels={postFx.bloomLevels}
                     intensity={postFx.bloomIntensity}
                     radius={postFx.bloomRadius}
-                />,
-            );
-        }
-
-        if (postFx.enableChromaticAberration) {
-            effects.push(
-                <ChromaticAberration
-                    key="chromatic-aberration"
-                    offset={caOffsetVec}
-                    radialModulation={defaultConfig.chromaticAberration.radialModulation}
-                    modulationOffset={defaultConfig.chromaticAberration.modulationOffset}
                 />,
             );
         }
@@ -268,19 +264,20 @@ export const Background3D = () => {
 
         if (postFx.antialiasMode === 'fxaa') {
             effects.push(<FXAA key="fxaa" />);
+        } else if (postFx.antialiasMode === 'smaa') {
+            effects.push(<SMAA key="smaa" />);
         }
 
         return <>{effects}</>;
     }, [
-            caOffsetVec,
             postFx.antialiasMode,
             postFx.bloomIntensity,
+            postFx.bloomLevels,
             postFx.bloomLuminanceThreshold,
             postFx.bloomLuminanceSmoothing,
             postFx.bloomMipmapBlur,
             postFx.bloomRadius,
             postFx.enableBloom,
-            postFx.enableChromaticAberration,
             postFx.enableNoise,
         ]);
 

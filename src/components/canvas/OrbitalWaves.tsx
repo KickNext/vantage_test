@@ -477,7 +477,8 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                     linewidth: orbitLineBaseWidthPx * initialPixelRatio,
                     worldUnits: false,
                     toneMapped: false,
-                    depthWrite: false,
+                    depthTest: true,
+                    depthWrite: true,
                     side: DoubleSide,
                 });
 
