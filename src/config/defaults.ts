@@ -24,8 +24,8 @@ export const defaultConfig = {
 
     // Scene Colors
     colors: {
-        background: "#0a0a0a",
-        planetoid: "#0a0a0a",
+        background: "#090909",
+        planetoid: "#090909",
         planetoidEmissive: "#000000",
         orbits: [
             "#ffc022",
@@ -39,10 +39,10 @@ export const defaultConfig = {
     // Wave Mechanics
     wave: {
         speed: 0.37,
-        maxScale: 25.5,
+        maxScale: 25,
         // Timing (0-1 cycle)
-        fadeInEnd: 0,
-        fadeOutStart: 0.1,
+        fadeInEnd: 0.1,
+        fadeOutStart: 0.2,
 
         // Material Appearance
         color: "#ffffff",
@@ -52,9 +52,9 @@ export const defaultConfig = {
         transmission: 1,
         thickness: 3,
         distortion: 0.15,
-        distortionScale: 0.08,
+        distortionScale: 0.16,
         chromaticAberration: 2,
         anisotropy: 0.48,
-        opacity: 0.31
+        opacity: 0.60
     }
 };
