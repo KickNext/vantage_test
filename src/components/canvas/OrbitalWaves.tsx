@@ -18,6 +18,7 @@ import {
     PointLight,
     Texture,
     TextureLoader,
+    TorusGeometry,
 } from 'three';
 import { easing } from 'maath';
 import { MeshTransmissionMaterial, useFBO } from '@react-three/drei';
@@ -26,6 +27,7 @@ import type { PerformanceConfig } from '../../hooks/usePerformanceTier';
 
 interface OrbitData {
     geometry: BufferGeometry;
+    pointCount: number;
     radius: number;
     colorIndex: number;
     speed: number;
@@ -41,12 +43,13 @@ interface WaveData {
 }
 
 interface WaveProps {
-    orbit: OrbitData;
+    orbits: OrbitData[];
     data: WaveData;
     config: typeof defaultConfig.wave;
     onComplete: (id: number) => void;
     renderConfig: WaveRenderConfig;
     sharedBuffer: Texture;
+    torusGeometry: TorusGeometry;
 }
 
 interface WaveRenderConfig {
@@ -108,13 +111,15 @@ function deactivateWaveMutable(wave: WaveData): void {
 }
 
 const ImpulseWave = memo(function ImpulseWave({
-    orbit,
+    orbits,
     data,
     config,
     onComplete,
     renderConfig,
     sharedBuffer,
+    torusGeometry,
 }: WaveProps) {
+    const orbitPlaneRef = useRef<Group>(null);
     const scaleGroupRef = useRef<Group>(null);
     const transmissionMeshRef = useRef<Mesh>(null);
 
@@ -133,17 +138,31 @@ const ImpulseWave = memo(function ImpulseWave({
         distortionScale: waveDistortionScale,
     } = config;
 
-    const rotation = useMemo(() => [orbit.rotationX, 0, orbit.rotationZ] as [number, number, number], [orbit]);
-
     useFrame((state) => {
+        const orbitPlane = orbitPlaneRef.current;
+        const scaleGroup = scaleGroupRef.current;
+        const transmissionMesh = transmissionMeshRef.current;
+        if (!orbitPlane || !scaleGroup || !transmissionMesh) return;
+        const mat = transmissionMesh.material as WaveMaterialProperties;
+
         if (!data.active) {
-            if (scaleGroupRef.current && scaleGroupRef.current.scale.x !== 0) {
-                scaleGroupRef.current.scale.set(0, 0, 0);
-            }
+            if (scaleGroup.visible) scaleGroup.visible = false;
             return;
         }
 
-        if (!scaleGroupRef.current) return;
+        if (!scaleGroup.visible) {
+            scaleGroup.visible = true;
+            const orbit = orbits[data.orbitIndex];
+            if (orbit) {
+                orbitPlane.rotation.set(orbit.rotationX, 0, orbit.rotationZ);
+            }
+            mat.color.set(waveColor);
+            mat.roughness = waveRoughness;
+            mat.chromaticAberration = waveChromAb;
+            mat.opacity = 0;
+            mat.distortion = 0;
+            mat.thickness = 0;
+        }
 
         const elapsed = state.clock.getElapsedTime() - data.startTime;
         const duration = 1 / waveSpeed;
@@ -151,20 +170,16 @@ const ImpulseWave = memo(function ImpulseWave({
 
         if (cycle >= 1) {
             onComplete(data.id);
-
-            scaleGroupRef.current.scale.set(0, 0, 0);
-            if (transmissionMeshRef.current) {
-                const mat = transmissionMeshRef.current.material as WaveMaterialProperties;
-                mat.distortion = 0;
-                mat.thickness = 0;
-                mat.opacity = 0;
-            }
+            scaleGroup.visible = false;
+            mat.distortion = 0;
+            mat.thickness = 0;
+            mat.opacity = 0;
             return;
         }
 
         const minScale = 1.5;
         const scale = minScale + (cycle * (waveMaxScale - minScale));
-        scaleGroupRef.current.scale.set(scale, 1, scale);
+        scaleGroup.scale.set(scale, 1, scale);
 
         let intensity = 0;
         if (cycle < fadeInEnd) {
@@ -175,24 +190,20 @@ const ImpulseWave = memo(function ImpulseWave({
             intensity = 1;
         }
 
-        if (transmissionMeshRef.current) {
-            const mat = transmissionMeshRef.current.material as WaveMaterialProperties;
-            mat.opacity = intensity * waveOpacity;
-            mat.color.set(waveColor);
-            mat.distortion = intensity * waveDistortion;
-            mat.thickness = intensity * waveThickness;
-            mat.roughness = waveRoughness;
-            mat.chromaticAberration = waveChromAb;
-        }
+        mat.opacity = intensity * waveOpacity;
+        mat.distortion = intensity * waveDistortion;
+        mat.thickness = intensity * waveThickness;
     });
 
     return (
-        <group rotation={rotation}>
-            <group ref={scaleGroupRef} scale={[0, 0, 0]}>
-                <mesh ref={transmissionMeshRef} rotation={[-Math.PI / 2, 0, 0]} frustumCulled>
-                    <torusGeometry
-                        args={[1, 0.5, renderConfig.torusSegments[0], renderConfig.torusSegments[1]]}
-                    />
+        <group ref={orbitPlaneRef}>
+            <group ref={scaleGroupRef} visible={false}>
+                <mesh
+                    ref={transmissionMeshRef}
+                    rotation={[-Math.PI / 2, 0, 0]}
+                    geometry={torusGeometry}
+                    frustumCulled
+                >
                     <MeshTransmissionMaterial
                         buffer={sharedBuffer}
                         resolution={renderConfig.transmissionResolution}
@@ -229,8 +240,9 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const orbitAnchorRefs = useRef<Array<Group | null>>([]);
 
     const hasCachedTransmissionFrame = useRef(false);
-    const lastOrbitIndices = useRef<number[]>([]);
-    const lastActiveWaveId = useRef<number>(-1);
+    const lastOrbitIndexRef = useRef<number>(-1);
+    const lastActiveWaveRef = useRef<WaveData | null>(null);
+    const activeWavesCountRef = useRef(0);
     const hasFiredIntroWave = useRef(false);
     const triggerQueue = useRef(false);
     const cachedColor = useRef(new Color());
@@ -271,7 +283,32 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const sharedFbo = useFBO(
         waveRenderConfig.transmissionResolution,
         waveRenderConfig.transmissionResolution,
+        {
+            depthBuffer: false,
+            stencilBuffer: false,
+            generateMipmaps: false,
+            samples: 0,
+        },
     );
+
+    useEffect(() => {
+        sharedFbo.texture.generateMipmaps = false;
+    }, [sharedFbo]);
+
+    const waveTorusGeometry = useMemo(
+        () =>
+            new TorusGeometry(
+                1,
+                0.5,
+                waveRenderConfig.torusSegments[0],
+                waveRenderConfig.torusSegments[1],
+            ),
+        [waveRenderConfig.torusSegments],
+    );
+
+    useEffect(() => {
+        return () => waveTorusGeometry.dispose();
+    }, [waveTorusGeometry]);
 
     useEffect(() => {
         transmissionCacheVersion.current += 1;
@@ -311,6 +348,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
 
             return {
                 geometry,
+                pointCount: segments + 1,
                 radius,
                 colorIndex: i % 5,
                 speed: (Math.random() * 0.1 + 0.05) * (i % 2 === 0 ? 1 : -1),
@@ -397,14 +435,31 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
 
     useEffect(() => {
         const waves = wavesRef.current;
-        for (let i = maxActiveWaves; i < waves.length; i++) {
-            waves[i].active = false;
+        let activeCount = 0;
+
+        for (let i = 0; i < waves.length; i++) {
+            const wave = waves[i];
+            if (!wave) continue;
+
+            if (i >= maxActiveWaves && wave.active) {
+                wave.active = false;
+                if (lastActiveWaveRef.current?.id === wave.id) {
+                    lastActiveWaveRef.current = null;
+                }
+                continue;
+            }
+
+            if (wave.active) activeCount += 1;
         }
+
+        activeWavesCountRef.current = activeCount;
+
     }, [maxActiveWaves]);
 
     const triggerWaveAction = useCallback((state: { clock: { getElapsedTime: () => number } }) => {
         const waves = wavesRef.current;
         const activationLimit = Math.min(maxActiveWaves, waves.length);
+        const hadActiveWaves = activeWavesCountRef.current > 0;
 
         let availableWaveIndex = -1;
         for (let i = 0; i < activationLimit; i++) {
@@ -418,17 +473,45 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
 
         const now = state.clock.getElapsedTime();
         const orbitCount = orbits.length;
+        const previousOrbitIndex = lastOrbitIndexRef.current;
 
-        let nextOrbitIndex = Math.floor(Math.random() * orbitCount);
-        let attempts = 0;
-        while (lastOrbitIndices.current.includes(nextOrbitIndex) && attempts < 10) {
-            nextOrbitIndex = Math.floor(Math.random() * orbitCount);
-            attempts++;
+        const isBusyOrbit = (orbitIndex: number): boolean => {
+            for (let i = 0; i < activationLimit; i++) {
+                const wave = waves[i];
+                if (wave.active && wave.orbitIndex === orbitIndex) return true;
+            }
+            return false;
+        };
+
+        let nextOrbitIndex = -1;
+        const randomAttempts = Math.max(orbitCount * 2, 8);
+        for (let attempt = 0; attempt < randomAttempts; attempt++) {
+            const candidate = Math.floor(Math.random() * orbitCount);
+            if (candidate === previousOrbitIndex) continue;
+            if (isBusyOrbit(candidate)) continue;
+            nextOrbitIndex = candidate;
+            break;
         }
 
-        const history = [nextOrbitIndex, ...lastOrbitIndices.current];
-        if (history.length > 3) history.pop();
-        lastOrbitIndices.current = history;
+        if (nextOrbitIndex === -1) {
+            for (let i = 0; i < orbitCount; i++) {
+                if (i === previousOrbitIndex) continue;
+                if (isBusyOrbit(i)) continue;
+                nextOrbitIndex = i;
+                break;
+            }
+        }
+
+        if (nextOrbitIndex === -1) {
+            if (orbitCount > 1 && previousOrbitIndex >= 0) {
+                nextOrbitIndex =
+                    (previousOrbitIndex + 1 + Math.floor(Math.random() * (orbitCount - 1))) % orbitCount;
+            } else {
+                nextOrbitIndex = Math.floor(Math.random() * orbitCount);
+            }
+        }
+
+        lastOrbitIndexRef.current = nextOrbitIndex;
 
         const nextWave = waves[availableWaveIndex];
         if (!nextWave || nextWave.active) return;
@@ -436,9 +519,17 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         nextWave.active = true;
         nextWave.startTime = now;
         nextWave.orbitIndex = nextOrbitIndex;
-        transmissionCacheVersion.current += 1;
-        hasCachedTransmissionFrame.current = false;
-        lastActiveWaveId.current = nextWave.id;
+        activeWavesCountRef.current += 1;
+        lastActiveWaveRef.current = nextWave;
+        if (wavesGroupRef.current && !wavesGroupRef.current.visible) {
+            wavesGroupRef.current.visible = true;
+        }
+        // Preserve the offscreen refraction cache while waves are already active.
+        // Rebuild it only when entering the active state from idle.
+        if (!hadActiveWaves) {
+            transmissionCacheVersion.current += 1;
+            hasCachedTransmissionFrame.current = false;
+        }
     }, [maxActiveWaves, orbits.length]);
 
     const handlePointerDown = useCallback(() => {
@@ -455,7 +546,6 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             if (document.visibilityState !== 'visible') return;
             transmissionCacheVersion.current += 1;
             hasCachedTransmissionFrame.current = false;
-            if (wavesGroupRef.current) wavesGroupRef.current.visible = true;
         };
 
         document.addEventListener('visibilitychange', handleVisibilityChange);
@@ -511,8 +601,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             }
 
             if (orbitLine) {
-                const pointsCount = orbitLine.geometry.getAttribute('position').count;
-                const currentCount = Math.floor(drawProgress * pointsCount);
+                const currentCount = Math.floor(drawProgress * orbit.pointCount);
 
                 if (runtime.lastDrawCount !== currentCount) {
                     orbitLine.geometry.setDrawRange(0, currentCount);
@@ -548,9 +637,15 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
             sphereMesh.instanceMatrix.needsUpdate = true;
         }
 
-        const hasActiveWaves = wavesRef.current.some((wave) => wave.active);
+        const hasActiveWaves = activeWavesCountRef.current > 0;
+        const wavesGroup = wavesGroupRef.current;
 
-        if (hasActiveWaves && wavesGroupRef.current) {
+        if (wavesGroup) {
+            // Skip rendering all idle transmission meshes when there are no active waves.
+            wavesGroup.visible = hasActiveWaves;
+        }
+
+        if (hasActiveWaves && wavesGroup) {
             const cacheVersionChanged =
                 capturedTransmissionCacheVersion.current !== transmissionCacheVersion.current;
 
@@ -560,7 +655,6 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                 if (!gl.getContext().isContextLost()) {
                     const oldToneMapping = gl.toneMapping;
                     const oldRenderTarget = gl.getRenderTarget();
-                    const wavesGroup = wavesGroupRef.current;
                     wavesGroup.visible = false;
 
                     try {
@@ -576,18 +670,12 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                     }
                 }
             }
-        } else {
+        } else if (hasCachedTransmissionFrame.current) {
             hasCachedTransmissionFrame.current = false;
         }
 
-        if (lastActiveWaveId.current !== -1 && logoMaterialRef.current) {
-            let activeWave: WaveData | undefined;
-            for (const wave of wavesRef.current) {
-                if (wave.id === lastActiveWaveId.current) {
-                    activeWave = wave;
-                    break;
-                }
-            }
+        if (logoMaterialRef.current) {
+            const activeWave = lastActiveWaveRef.current;
 
             if (activeWave?.active) {
                 const elapsed = now - activeWave.startTime;
@@ -655,7 +743,13 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
     const handleWaveComplete = useCallback((id: number) => {
         for (const wave of wavesRef.current) {
             if (wave.id === id) {
-                if (wave.active) deactivateWaveMutable(wave);
+                if (wave.active) {
+                    deactivateWaveMutable(wave);
+                    activeWavesCountRef.current = Math.max(0, activeWavesCountRef.current - 1);
+                    if (lastActiveWaveRef.current?.id === id) {
+                        lastActiveWaveRef.current = null;
+                    }
+                }
                 break;
             }
         }
@@ -678,16 +772,17 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                     <meshBasicMaterial color="#0a0a0a" />
                 </mesh>
 
-                <group ref={wavesGroupRef}>
+                <group ref={wavesGroupRef} visible={false}>
                     {wavePool.map((wave) => (
                         <ImpulseWave
                             key={wave.id}
                             data={wave}
-                            orbit={orbits[wave.orbitIndex]}
+                            orbits={orbits}
                             config={waveConfig}
                             onComplete={handleWaveComplete}
                             renderConfig={waveRenderConfig}
                             sharedBuffer={sharedFbo.texture}
+                            torusGeometry={waveTorusGeometry}
                         />
                     ))}
                 </group>

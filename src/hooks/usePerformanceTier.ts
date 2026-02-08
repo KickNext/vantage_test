@@ -82,9 +82,6 @@ function detectIsMobile(): boolean {
     const mobileUaPattern = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i;
     if (mobileUaPattern.test(ua)) return true;
 
-    // Проверка размера экрана (мобильный = узкий экран)
-    if (window.screen.width <= 768) return true;
-
     // Touch-only устройство (нет мыши)
     if ('ontouchstart' in window && !window.matchMedia('(pointer: fine)').matches) return true;
 

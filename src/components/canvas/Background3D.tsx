@@ -6,7 +6,6 @@ import {
     ChromaticAberration,
     Noise,
     FXAA,
-    SMAA,
 } from '@react-three/postprocessing';
 import { PerformanceMonitor } from '@react-three/drei';
 import { Vector2 } from 'three';
@@ -152,20 +151,17 @@ export const Background3D = () => {
         const bloomIntensityMultiplier =
             quality === 2 ? 1 : quality === 1 ? (perf.tier === 'high' ? 0.97 : 0.9) : 0.78;
         const keepHighTierLook = perf.tier === 'high' && quality >= 1;
+        const highTierMsaa = perf.tier === 'high' && quality === 2;
 
         return {
             resolutionScale,
-            multisampling: perf.tier === 'high' && quality === 2 ? 2 : 0,
+            multisampling: highTierMsaa ? 4 : 0,
             bloomIntensity: defaultConfig.bloom.intensity * bloomIntensityMultiplier,
             enableBloom: perf.enableBloom,
             enableChromaticAberration:
                 perf.enableChromaticAberration && (quality === 2 || keepHighTierLook),
             enableNoise: perf.enableNoise && (quality === 2 || keepHighTierLook),
-            antialiasMode: perf.antialias
-                ? perf.tier === 'high' && quality === 2
-                    ? 'smaa'
-                    : 'fxaa'
-                : 'none',
+            antialiasMode: perf.antialias ? (highTierMsaa ? 'none' : 'fxaa') : 'none',
         };
     }, [quality, perf.antialias, perf.enableBloom, perf.enableChromaticAberration, perf.enableNoise, perf.tier]);
 
@@ -232,9 +228,7 @@ export const Background3D = () => {
             effects.push(<Noise key="noise" opacity={defaultConfig.noise.opacity} />);
         }
 
-        if (postFx.antialiasMode === 'smaa') {
-            effects.push(<SMAA key="smaa" />);
-        } else if (postFx.antialiasMode === 'fxaa') {
+        if (postFx.antialiasMode === 'fxaa') {
             effects.push(<FXAA key="fxaa" />);
         }
 
@@ -265,7 +259,7 @@ export const Background3D = () => {
             <Canvas
                 camera={{ position: [0, 0, 26], fov: 45 }}
                 gl={{
-                    antialias: perf.antialias && perf.tier === 'high',
+                    antialias: false,
                     alpha: false,
                     preserveDrawingBuffer: false,
                     powerPreference: 'high-performance',
