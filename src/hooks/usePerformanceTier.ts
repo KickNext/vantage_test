@@ -181,8 +181,8 @@ function buildConfig(tier: PerformanceTier): PerformanceConfig {
                 sphereSegments: [16, 16],
                 orbitSegments: 48,
 
-                // На low-тире тяжелые пост-эффекты отключены.
-                enableBloom: false,
+                // На low сохраняем мягкий bloom, чтобы не терять общий визуальный стиль сцены.
+                enableBloom: true,
                 enableChromaticAberration: false,
                 enableNoise: false,
                 enableVignette: false,

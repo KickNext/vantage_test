@@ -48,7 +48,7 @@ interface WaveProps {
     config: typeof defaultConfig.wave;
     onComplete: (id: number) => void;
     renderConfig: WaveRenderConfig;
-    transmissionSamples: number;
+    renderProfile: WaveSlotRenderProfile;
     sharedBuffer: Texture;
     torusGeometry: TorusGeometry;
 }
@@ -66,6 +66,12 @@ interface WaveMaterialProperties extends Material {
     roughness: number;
     chromaticAberration: number;
     color: Color;
+}
+
+interface WaveSlotRenderProfile {
+    samples: number;
+    distortionFactor: number;
+    chromaticFactor: number;
 }
 
 interface OrbitFrameState {
@@ -86,8 +92,6 @@ const INTRO_DELAY = 0.5;
 const DRAW_DURATION = 1.5;
 const INTRO_DURATION = 6.0;
 const LIGHT_START = 3.5;
-const SECONDARY_WAVE_SAMPLES_RATIO = 0.55;
-const TERTIARY_WAVE_SAMPLES_RATIO = 0.34;
 
 const easeInOutSine = (x: number): number => {
     return -(Math.cos(Math.PI * x) - 1) / 2;
@@ -113,10 +117,20 @@ function deactivateWaveMutable(wave: WaveData): void {
     wave.active = false;
 }
 
-function getWaveSlotSamples(slotIndex: number, baseSamples: number): number {
-    if (slotIndex <= 0) return baseSamples;
-    if (slotIndex === 1) return Math.max(1, Math.round(baseSamples * SECONDARY_WAVE_SAMPLES_RATIO));
-    return Math.max(1, Math.round(baseSamples * TERTIARY_WAVE_SAMPLES_RATIO));
+function getWaveSlotRenderProfile(slotIndex: number, baseSamples: number): WaveSlotRenderProfile {
+    if (slotIndex <= 0) {
+        return {
+            samples: baseSamples,
+            distortionFactor: 1,
+            chromaticFactor: 1,
+        };
+    }
+
+    return {
+        samples: Math.max(1, Math.floor(baseSamples * 0.75)),
+        distortionFactor: 1,
+        chromaticFactor: 1,
+    };
 }
 
 const ImpulseWave = memo(function ImpulseWave({
@@ -125,7 +139,7 @@ const ImpulseWave = memo(function ImpulseWave({
     config,
     onComplete,
     renderConfig,
-    transmissionSamples,
+    renderProfile,
     sharedBuffer,
     torusGeometry,
 }: WaveProps) {
@@ -168,7 +182,7 @@ const ImpulseWave = memo(function ImpulseWave({
             }
             mat.color.set(waveColor);
             mat.roughness = waveRoughness;
-            mat.chromaticAberration = waveChromAb;
+            mat.chromaticAberration = waveChromAb * renderProfile.chromaticFactor;
             mat.opacity = 0;
             mat.distortion = 0;
             mat.thickness = 0;
@@ -201,7 +215,7 @@ const ImpulseWave = memo(function ImpulseWave({
         }
 
         mat.opacity = intensity * waveOpacity;
-        mat.distortion = intensity * waveDistortion;
+        mat.distortion = intensity * waveDistortion * renderProfile.distortionFactor;
         mat.thickness = intensity * waveThickness;
     });
 
@@ -217,14 +231,14 @@ const ImpulseWave = memo(function ImpulseWave({
                     <MeshTransmissionMaterial
                         buffer={sharedBuffer}
                         resolution={renderConfig.transmissionResolution}
-                        samples={transmissionSamples}
+                        samples={renderProfile.samples}
                         thickness={0}
                         roughness={waveRoughness}
                         anisotropy={waveAnisotropy}
-                        chromaticAberration={waveChromAb}
+                        chromaticAberration={waveChromAb * renderProfile.chromaticFactor}
                         distortion={0}
                         distortionScale={waveDistortionScale}
-                        temporalDistortion={0.1}
+                        temporalDistortion={0.1 * renderProfile.distortionFactor}
                         color={waveColor}
                         attenuationDistance={Infinity}
                         toneMapped={false}
@@ -441,10 +455,10 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
         })),
     );
 
-    const waveSlotTransmissionSamples = useMemo(
+    const waveSlotRenderProfiles = useMemo(
         () =>
             Array.from({ length: wavePool.length }, (_, slotIndex) =>
-                getWaveSlotSamples(slotIndex, waveRenderConfig.transmissionSamples),
+                getWaveSlotRenderProfile(slotIndex, waveRenderConfig.transmissionSamples),
             ),
         [wavePool.length, waveRenderConfig.transmissionSamples],
     );
@@ -799,9 +813,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality }: OrbitalWaves
                             config={waveConfig}
                             onComplete={handleWaveComplete}
                             renderConfig={waveRenderConfig}
-                            transmissionSamples={
-                                waveSlotTransmissionSamples[wave.id] ?? waveRenderConfig.transmissionSamples
-                            }
+                            renderProfile={waveSlotRenderProfiles[wave.id] ?? getWaveSlotRenderProfile(1, 1)}
                             sharedBuffer={sharedFbo.texture}
                             torusGeometry={waveTorusGeometry}
                         />
