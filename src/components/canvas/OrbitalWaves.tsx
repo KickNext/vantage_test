@@ -510,6 +510,8 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
     const transmissionCacheVersion = useRef(0);
     const capturedTransmissionCacheVersion = useRef(-1);
     const lastOrbitLineScreenWidthPxRef = useRef(Number.NaN);
+    /** Флаг: палец в данный момент касается экрана (для возврата параллакса в центр) */
+    const isTouchActiveRef = useRef(false);
 
     const waveRenderConfig = useMemo<WaveRenderConfig>(() => {
         const [baseRadial, baseTubular] = perf.torusSegments;
@@ -929,6 +931,22 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
         return () => window.removeEventListener('pointerdown', handlePointerDown);
     }, [handlePointerDown]);
 
+    // Отслеживание touch-состояния: при отпускании пальца параллакс плавно возвращается в центр
+    useEffect(() => {
+        const onTouchStart = () => { isTouchActiveRef.current = true; };
+        const onTouchEnd = () => { isTouchActiveRef.current = false; };
+
+        window.addEventListener('touchstart', onTouchStart, { passive: true });
+        window.addEventListener('touchend', onTouchEnd, { passive: true });
+        window.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+        return () => {
+            window.removeEventListener('touchstart', onTouchStart);
+            window.removeEventListener('touchend', onTouchEnd);
+            window.removeEventListener('touchcancel', onTouchEnd);
+        };
+    }, []);
+
     useEffect(() => {
         const handleVisibilityChange = () => {
             if (document.visibilityState !== 'visible') return;
@@ -958,13 +976,25 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
 
         const sceneGroup = groupRef.current;
         if (sceneGroup) {
-            const x = state.pointer.x * defaultConfig.animation.parallaxFactor;
-            const y = -state.pointer.y * defaultConfig.animation.parallaxFactor;
             const nextRotation = targetRotation.current;
-            nextRotation[0] = y;
-            nextRotation[1] = x;
-            nextRotation[2] = 0;
-            easing.dampE(sceneGroup.rotation, nextRotation, defaultConfig.animation.parallaxDamping, delta);
+
+            // На тач-устройствах: при отпускании пальца плавно возвращаем параллакс в центр.
+            // При касании — используем pointer position как на десктопе (R3F pointer работает с touch).
+            if (isTouchActiveRef.current || !('ontouchstart' in globalThis)) {
+                // Палец на экране или десктоп — параллакс по позиции курсора/пальца
+                const x = state.pointer.x * defaultConfig.animation.parallaxFactor;
+                const y = -state.pointer.y * defaultConfig.animation.parallaxFactor;
+                nextRotation[0] = y;
+                nextRotation[1] = x;
+                nextRotation[2] = 0;
+                easing.dampE(sceneGroup.rotation, nextRotation, defaultConfig.animation.parallaxDamping, delta);
+            } else {
+                // Тач-устройство, палец отпущен — плавный возврат в (0, 0, 0)
+                nextRotation[0] = 0;
+                nextRotation[1] = 0;
+                nextRotation[2] = 0;
+                easing.dampE(sceneGroup.rotation, nextRotation, defaultConfig.animation.touchReturnDamping, delta);
+            }
         }
 
         const sphereMesh = orbitSphereMeshRef.current;
