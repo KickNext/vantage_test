@@ -26,6 +26,8 @@ import { LineGeometry } from 'three/examples/jsm/lines/LineGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { defaultConfig } from '../../config/defaults';
 import type { PerformanceConfig } from '../../config/performance';
+import { computeOrbitGeometry } from './gpu';
+import type { GPUComputeConfig } from './gpu';
 
 interface OrbitData {
     geometry: BufferGeometry;
@@ -104,10 +106,10 @@ export type OrbitLayoutPreset =
     | 'phaseLattice'
     | 'meridianWeave';
 
-const INTRO_DELAY = 0.5;
-const DRAW_DURATION = 1.5;
-const INTRO_DURATION = 6.0;
-const LIGHT_START = 3.5;
+const INTRO_DELAY = defaultConfig.animation.introDelay;
+const DRAW_DURATION = defaultConfig.animation.drawDuration;
+const INTRO_DURATION = defaultConfig.animation.introDuration;
+const LIGHT_START = defaultConfig.animation.lightStartTime;
 const LOGO_VISIBILITY_EPSILON = 0.01;
 
 const ORBIT_LAYOUT_CONFIG: Record<OrbitLayoutPreset, { baseRadius: number; radiusStep: number }> = {
@@ -158,9 +160,8 @@ function deactivateWaveMutable(wave: WaveData): void {
 }
 
 function getOrbitLineBaseWidthPx(quality: 0 | 1 | 2): number {
-    if (quality === 2) return 1.75;
-    if (quality === 1) return 1.5;
-    return 1.35;
+    const widths = defaultConfig.orbits.lineWidthByQuality;
+    return widths[quality];
 }
 
 function getOrbitSegments(baseSegments: number, quality: 0 | 1 | 2): number {
@@ -395,6 +396,8 @@ const ImpulseWave = memo(function ImpulseWave({
         chromaticAberration: waveChromAb,
         anisotropy: waveAnisotropy,
         distortionScale: waveDistortionScale,
+        temporalDistortion: waveTemporalDistortion,
+        minScale: waveMinScale,
     } = config;
 
     useFrame((state) => {
@@ -436,8 +439,7 @@ const ImpulseWave = memo(function ImpulseWave({
             return;
         }
 
-        const minScale = 1.5;
-        const scale = minScale + (cycle * (waveMaxScale - minScale));
+        const scale = waveMinScale + (cycle * (waveMaxScale - waveMinScale));
         scaleGroup.scale.set(scale, 1, scale);
 
         let intensity = 0;
@@ -474,7 +476,7 @@ const ImpulseWave = memo(function ImpulseWave({
                         chromaticAberration={waveChromAb * renderProfile.chromaticFactor}
                         distortion={0}
                         distortionScale={waveDistortionScale}
-                        temporalDistortion={0.1 * renderProfile.distortionFactor}
+                        temporalDistortion={waveTemporalDistortion * renderProfile.distortionFactor}
                         color={waveColor}
                         attenuationDistance={Infinity}
                         toneMapped={false}
@@ -527,15 +529,15 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
             quality === 2
                 ? perf.transmissionResolution
                 : quality === 1
-                  ? Math.max(96, Math.floor(perf.transmissionResolution * 0.75))
-                  : Math.max(64, Math.floor(perf.transmissionResolution * 0.55));
+                    ? Math.max(96, Math.floor(perf.transmissionResolution * 0.75))
+                    : Math.max(64, Math.floor(perf.transmissionResolution * 0.55));
 
         const transmissionSamples =
             quality === 2
                 ? perf.transmissionSamples
                 : quality === 1
-                  ? Math.max(2, perf.transmissionSamples - 2)
-                  : 1;
+                    ? Math.max(2, perf.transmissionSamples - 2)
+                    : 1;
 
         return {
             torusSegments,
@@ -594,7 +596,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
     }, [quality]);
 
     const [orbits] = useState<OrbitData[]>(() => {
-        const orbitCount = 10;
+        const orbitCount = defaultConfig.orbits.count;
         const segments = getOrbitSegments(perf.orbitSegments, quality);
         const layoutConfig = ORBIT_LAYOUT_CONFIG[layoutPreset];
 
@@ -652,7 +654,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
                 radiusZ,
                 phaseOffset,
                 colorIndex: i % 5,
-                speed: (Math.random() * 0.1 + 0.05) * (i % 2 === 0 ? 1 : -1),
+                speed: (Math.random() * (defaultConfig.orbits.speedMax - defaultConfig.orbits.speedMin) + defaultConfig.orbits.speedMin) * (i % 2 === 0 ? 1 : -1),
                 rotationX: placement.rotationX,
                 rotationY: placement.rotationY,
                 rotationZ: placement.rotationZ,
@@ -745,6 +747,56 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
         if (!sphereMesh) return;
         sphereMesh.instanceMatrix.setUsage(DynamicDrawUsage);
     }, []);
+
+    // --- GPU Compute: вычисление орбитальной геометрии на WebGPU ---
+    // Первый рендер использует CPU-сгенерированные орбиты (синхронно, без задержки).
+    // GPU compute запускается асинхронно и заменяет геометрию линий по готовности.
+    // При недоступности WebGPU (iOS < 26, старые браузеры) — остаётся CPU-геометрия.
+    useEffect(() => {
+        let cancelled = false;
+
+        // Определяем segmentsPerOrbit из уже созданных orbits
+        const segmentsPerOrbit = orbits[0]?.pointCount
+            ? orbits[0].pointCount - 1
+            : 0;
+
+        if (segmentsPerOrbit <= 0) return;
+
+        const config: GPUComputeConfig = {
+            orbitCount: orbits.length,
+            segmentsPerOrbit,
+            orbits: orbits.map((o) => ({
+                radiusX: o.radiusX,
+                radiusZ: o.radiusZ,
+                phaseOffset: o.phaseOffset,
+            })),
+        };
+
+        computeOrbitGeometry(config).then((result) => {
+            if (cancelled) return;
+            if (result.source !== 'gpu') return;
+
+            // Обновляем геометрию линий GPU-вычисленными позициями.
+            // Визуально идентично CPU-результату (та же математика, f32 точность).
+            for (let i = 0; i < result.positions.length; i++) {
+                const orbitLine = orbitLineRefs.current[i];
+                if (!orbitLine) continue;
+
+                // Сохраняем текущий прогресс отрисовки (intro-анимация может быть в процессе)
+                const savedInstanceCount = orbitLine.geometry.instanceCount;
+
+                // Заменяем позиции на GPU-вычисленные
+                orbitLine.geometry.setPositions(result.positions[i]);
+
+                // Восстанавливаем прогресс рисования — intro-анимация продолжается без разрыва
+                orbitLine.geometry.instanceCount = savedInstanceCount;
+            }
+        });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [orbits]);
 
     const maxActiveWaves = useMemo(() => {
         if (quality === 2) return perf.maxWaves;
@@ -911,13 +963,13 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
 
         const sceneGroup = groupRef.current;
         if (sceneGroup) {
-            const x = state.pointer.x * 0.2;
-            const y = -state.pointer.y * 0.2;
+            const x = state.pointer.x * defaultConfig.animation.parallaxFactor;
+            const y = -state.pointer.y * defaultConfig.animation.parallaxFactor;
             const nextRotation = targetRotation.current;
             nextRotation[0] = y;
             nextRotation[1] = x;
             nextRotation[2] = 0;
-            easing.dampE(sceneGroup.rotation, nextRotation, 1.5, delta);
+            easing.dampE(sceneGroup.rotation, nextRotation, defaultConfig.animation.parallaxDamping, delta);
         }
 
         const sphereMesh = orbitSphereMeshRef.current;
@@ -979,7 +1031,7 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
                     runtime.lastProgress = phaseProgress;
                 }
 
-                const targetScale = opacity > 0.01 ? (isDrawing ? 0.09 : 0.06) : 0.0001;
+                const targetScale = opacity > 0.01 ? (isDrawing ? defaultConfig.spheres.orbitSphereDrawingScale : defaultConfig.spheres.orbitSphereIdleScale) : 0.0001;
                 if (runtime.lastScale !== targetScale) {
                     orbitAnchor.scale.setScalar(targetScale);
                     runtime.lastScale = targetScale;
@@ -1093,8 +1145,8 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
             }
         }
 
-        const ambientIntensity = now > LIGHT_START ? 0.4 : 0;
-        const mainIntensity = now > LIGHT_START ? 1.5 : 0;
+        const ambientIntensity = now > LIGHT_START ? defaultConfig.lighting.ambientIntensity : 0;
+        const mainIntensity = now > LIGHT_START ? defaultConfig.lighting.mainLightIntensity : 0;
 
         if (ambientLightRef.current) {
             easing.damp(ambientLightRef.current, 'intensity', ambientIntensity, 2, delta);
@@ -1124,8 +1176,8 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
         <>
             <group ref={groupRef} onPointerDown={handlePointerDown} rotation={[0, 0, 0]}>
                 <ambientLight ref={ambientLightRef} intensity={0} />
-                <pointLight ref={mainLightRef} position={[10, 10, 10]} intensity={0} />
-                <pointLight position={[-5, 5, -5]} intensity={0.5} color="#ffffff" distance={20} />
+                <pointLight ref={mainLightRef} position={defaultConfig.lighting.mainLightPosition} intensity={0} />
+                <pointLight position={defaultConfig.lighting.fillLightPosition} intensity={defaultConfig.lighting.fillLightIntensity} color={defaultConfig.lighting.fillLightColor} distance={defaultConfig.lighting.fillLightDistance} />
 
                 <mesh
                     onClick={(event) => {
@@ -1133,8 +1185,8 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
                         handlePointerDown();
                     }}
                 >
-                    <sphereGeometry args={[2, coreSphereSegments[0], coreSphereSegments[1]]} />
-                    <meshBasicMaterial color="#0a0a0a" />
+                    <sphereGeometry args={[defaultConfig.spheres.coreRadius, coreSphereSegments[0], coreSphereSegments[1]]} />
+                    <meshBasicMaterial color={defaultConfig.spheres.coreColor} />
                 </mesh>
 
                 <group ref={wavesGroupRef} visible={false}>
@@ -1202,17 +1254,17 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
                 frustumCulled={false}
             >
                 <sphereGeometry args={[1, orbitSphereSegments[0], orbitSphereSegments[1]]} />
-                <meshBasicMaterial color="#ffffff" toneMapped={false} />
+                <meshBasicMaterial color={defaultConfig.spheres.orbitSphereColor} toneMapped={false} />
             </instancedMesh>
 
             <mesh
-                position={[0, 0, 2.2]}
+                position={defaultConfig.logo.position}
                 onPointerDown={(event) => {
                     event.stopPropagation();
                     handlePointerDown();
                 }}
             >
-                <planeGeometry args={[2, 0.96]} />
+                <planeGeometry args={defaultConfig.logo.planeSize} />
                 <meshBasicMaterial
                     ref={logoMaterialRef}
                     map={logoTexture}

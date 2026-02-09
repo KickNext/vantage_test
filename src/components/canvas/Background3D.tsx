@@ -26,7 +26,7 @@ export const Background3D = ({ layoutPreset }: Background3DProps) => {
     const postFx = useMemo(
         () => ({
             resolutionScale: 1,
-            multisampling: perf.antialias ? 4 : 0,
+            multisampling: perf.antialias ? perf.multisampling : 0,
             bloomIntensity: defaultConfig.bloom.intensity,
             bloomLuminanceThreshold: defaultConfig.bloom.luminanceThreshold,
             bloomLuminanceSmoothing: 0.03,
@@ -37,7 +37,7 @@ export const Background3D = ({ layoutPreset }: Background3DProps) => {
             enableBloom: perf.enableBloom,
             enableNoise: perf.enableNoise,
         }),
-        [perf.antialias, perf.enableBloom, perf.enableNoise],
+        [perf.antialias, perf.multisampling, perf.enableBloom, perf.enableNoise],
     );
 
     const vignetteStyle = useMemo(
@@ -109,7 +109,7 @@ export const Background3D = ({ layoutPreset }: Background3DProps) => {
             {showVignette && <div style={vignetteStyle} />}
 
             <Canvas
-                camera={{ position: [0, 0, 26], fov: 45 }}
+                camera={{ position: defaultConfig.camera.position, fov: defaultConfig.camera.fov }}
                 gl={{
                     antialias: false,
                     alpha: false,

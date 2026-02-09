@@ -1,6 +1,8 @@
 export interface PerformanceConfig {
     readonly maxDpr: number;
     readonly antialias: boolean;
+    /** Количество сэмплов мультисэмплинга (0 = выкл) */
+    readonly multisampling: number;
     readonly torusSegments: [number, number];
     readonly sphereSegments: [number, number];
     readonly orbitSegments: number;
@@ -16,6 +18,7 @@ export interface PerformanceConfig {
 export const maxPerformanceConfig: PerformanceConfig = {
     maxDpr: 2,
     antialias: true,
+    multisampling: 4,
     torusSegments: [16, 32],
     sphereSegments: [16, 16],
     orbitSegments: 32,
