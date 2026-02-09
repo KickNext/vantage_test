@@ -1,7 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useFrame, useLoader } from '@react-three/fiber';
 import {
-    AmbientLight,
     BufferGeometry,
     Color,
     DoubleSide,
@@ -14,7 +13,6 @@ import {
     MeshBasicMaterial,
     NoToneMapping,
     NormalBlending,
-    PointLight,
     Texture,
     TextureLoader,
     TorusGeometry,
@@ -109,7 +107,6 @@ export type OrbitLayoutPreset =
 const INTRO_DELAY = defaultConfig.animation.introDelay;
 const DRAW_DURATION = defaultConfig.animation.drawDuration;
 const INTRO_DURATION = defaultConfig.animation.introDuration;
-const LIGHT_START = defaultConfig.animation.lightStartTime;
 const LOGO_VISIBILITY_EPSILON = 0.01;
 
 const ORBIT_LAYOUT_CONFIG: Record<OrbitLayoutPreset, { baseRadius: number; radiusStep: number }> = {
@@ -491,8 +488,6 @@ const ImpulseWave = memo(function ImpulseWave({
 
 export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }: OrbitalWavesProps) => {
     const groupRef = useRef<Group>(null);
-    const ambientLightRef = useRef<AmbientLight>(null);
-    const mainLightRef = useRef<PointLight>(null);
     const logoMaterialRef = useRef<MeshBasicMaterial>(null);
     const wavesGroupRef = useRef<Group>(null);
     const orbitSphereMeshRef = useRef<InstancedMesh>(null);
@@ -1144,17 +1139,6 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
                 isManualWaveTriggerUnlocked.current = true;
             }
         }
-
-        const ambientIntensity = now > LIGHT_START ? defaultConfig.lighting.ambientIntensity : 0;
-        const mainIntensity = now > LIGHT_START ? defaultConfig.lighting.mainLightIntensity : 0;
-
-        if (ambientLightRef.current) {
-            easing.damp(ambientLightRef.current, 'intensity', ambientIntensity, 2, delta);
-        }
-
-        if (mainLightRef.current) {
-            easing.damp(mainLightRef.current, 'intensity', mainIntensity, 2, delta);
-        }
     });
 
     const handleWaveComplete = useCallback((id: number) => {
@@ -1175,9 +1159,6 @@ export const OrbitalWaves = ({ colors, waveConfig, perf, quality, layoutPreset }
     return (
         <>
             <group ref={groupRef} onPointerDown={handlePointerDown} rotation={[0, 0, 0]}>
-                <ambientLight ref={ambientLightRef} intensity={0} />
-                <pointLight ref={mainLightRef} position={defaultConfig.lighting.mainLightPosition} intensity={0} />
-                <pointLight position={defaultConfig.lighting.fillLightPosition} intensity={defaultConfig.lighting.fillLightIntensity} color={defaultConfig.lighting.fillLightColor} distance={defaultConfig.lighting.fillLightDistance} />
 
                 <mesh
                     onClick={(event) => {

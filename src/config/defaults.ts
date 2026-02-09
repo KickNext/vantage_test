@@ -52,30 +52,10 @@ export const defaultConfig = {
         drawDuration: 1.5,
         /** Общая длительность интро до первой волны (секунды) */
         introDuration: 6.0,
-        /** Время включения освещения (секунды) */
-        lightStartTime: 3.5,
         /** Множитель параллакса при движении мыши */
         parallaxFactor: 0.2,
         /** Демпфирование параллакса (чем больше — тем мягче) */
         parallaxDamping: 1.5,
-    },
-
-    // ── Lighting ────────────────────────────────────────────────────────
-    lighting: {
-        /** Целевая интенсивность ambient-света после intro */
-        ambientIntensity: 0.4,
-        /** Целевая интенсивность основного point-света после intro */
-        mainLightIntensity: 1.5,
-        /** Позиция основного point-света [x, y, z] */
-        mainLightPosition: [10, 10, 10] as [number, number, number],
-        /** Интенсивность заполняющего света */
-        fillLightIntensity: 0.5,
-        /** Позиция заполняющего света [x, y, z] */
-        fillLightPosition: [-5, 5, -5] as [number, number, number],
-        /** Цвет заполняющего света */
-        fillLightColor: "#ffffff",
-        /** Дальность заполняющего света */
-        fillLightDistance: 20,
     },
 
     // ── Spheres (Planets) ───────────────────────────────────────────────
